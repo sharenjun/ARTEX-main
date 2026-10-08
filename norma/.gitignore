@@ -1,0 +1,24 @@
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+
+# Local development tools
+.claude/
+.agents/
+.playwright-mcp/
+
+# Local docs / analysis notes
+docs/
+
+# Build outputs
+bin/
+dist/
+*.out
+
+# OS files
+.DS_Store
+Thumbs.db
