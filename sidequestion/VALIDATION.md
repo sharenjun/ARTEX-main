@@ -35,7 +35,7 @@
 在单独的可丢弃数据库中配置 `ARTEX_PG_DSN` 后，可以复现自动化检查（不要指向生产库）：
 
 ```sh
-go test -race ./agent ./db ./server ./sidequestion ./llmrec ./llmpool \
+go run ./tests/run.go -race ./agent ./db ./server ./sidequestion ./llmrec ./llmpool \
   -run 'Test(Side|Checkpoint|Snapshot|BuildRequest|Service|MainSide|CaptureRun|TaskArchive|CompleteForwards|StopIntent|CancelIntent)' -count=1
 cd web
 npx tsc --noEmit

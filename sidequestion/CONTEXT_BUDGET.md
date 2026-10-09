@@ -47,7 +47,7 @@ POST 先接纳并返回请求，准备与压缩在后台执行，不持有准入
 验证命令（仅使用独立测试库）：
 
 ```sh
-go test -race ./sidequestion ./db ./server -run 'TestSide|TestCheckpoint|TestSnapshot|TestBuildRequest|TestService|TestMainSide|TestTaskArchive' -count=1
+go run ./tests/run.go -race ./sidequestion ./db ./server -run 'TestSide|TestCheckpoint|TestSnapshot|TestBuildRequest|TestService|TestMainSide|TestTaskArchive' -count=1
 go build ./cmd/artex
 npx tsc --noEmit
 npm run build -- --webpack

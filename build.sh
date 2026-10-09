@@ -35,7 +35,7 @@ usage() {
   ./build.sh --release               编译并打包全部支持的目标
 
 选项：
-  --release              构建 Linux、macOS、Windows 的 amd64/arm64 目标并生成 zip
+  --release              构建 Linux/macOS amd64+arm64、Windows amd64，生成 zip 和 SHA256SUMS
   --target OS/ARCH       设置单个目标，例如 windows/amd64
   --upx                  强制使用 UPX 压缩二进制（可能影响部分 Linux 环境兼容性）
   --no-compress          不使用 UPX，仅使用 Go linker 裁剪并压缩 zip
@@ -110,6 +110,29 @@ else
   ARTEX_TARGET_ARCH="${ARTEX_TARGET_ARCH:-$(GOSUMDB="$ARTEX_GOSUMDB" go env GOARCH)}"
   ARTEX_TARGETS="${ARTEX_TARGETS:-${ARTEX_TARGET_OS}/${ARTEX_TARGET_ARCH}}"
 fi
+
+# Validate the complete target list before building the frontend or any binary.
+old_ifs="$IFS"
+IFS=','
+read -r -a raw_targets <<< "$ARTEX_TARGETS"
+IFS="$old_ifs"
+targets=()
+seen_targets=","
+for target in "${raw_targets[@]}"; do
+  target="${target//[[:space:]]/}"
+  [ -n "$target" ] || continue
+  case "$target" in
+    linux/amd64|linux/arm64|darwin/amd64|darwin/arm64|windows/amd64) ;;
+    *) die "不支持的目标：$target（支持 Linux/macOS AMD64、ARM64 和 Windows AMD64）" ;;
+  esac
+  case "$seen_targets" in
+    *",${target},"*) die "重复目标：$target" ;;
+  esac
+  seen_targets="${seen_targets}${target},"
+  targets+=("$target")
+done
+[ "${#targets[@]}" -gt 0 ] || die "ARTEX_TARGETS 不能为空"
+ARTEX_ARCHIVES=()
 
 if [ "${ARTEX_SKIP_FRONTEND:-0}" = "1" ]; then
   [ -d server/webui/dist ] || die "ARTEX_SKIP_FRONTEND=1 但 server/webui/dist 不存在"
@@ -186,6 +209,7 @@ package_binary() {
   if [ -f README.md ]; then cp README.md "$package_root/"; fi
   (cd "$ARTEX_PACKAGE_DIR" && zip -q -r -9 "$(basename "$archive")" "$(basename "$package_root")")
   rm -rf "$package_root"
+  ARTEX_ARCHIVES+=("$(basename "$archive")")
   ok "Release 压缩包：$archive"
 }
 
@@ -233,12 +257,11 @@ write_checksums() {
   [ "$ARTEX_PACKAGE" = "1" ] || return 0
   checksum_file="$ARTEX_PACKAGE_DIR/SHA256SUMS"
   if command -v sha256sum >/dev/null 2>&1; then
-    (cd "$ARTEX_PACKAGE_DIR" && for archive in *.zip; do sha256sum "$archive"; done > "$(basename "$checksum_file")")
+    (cd "$ARTEX_PACKAGE_DIR" && for archive in "${ARTEX_ARCHIVES[@]}"; do sha256sum "$archive"; done > "$(basename "$checksum_file")")
   elif command -v shasum >/dev/null 2>&1; then
-    (cd "$ARTEX_PACKAGE_DIR" && for archive in *.zip; do shasum -a 256 "$archive"; done > "$(basename "$checksum_file")")
+    (cd "$ARTEX_PACKAGE_DIR" && for archive in "${ARTEX_ARCHIVES[@]}"; do shasum -a 256 "$archive"; done > "$(basename "$checksum_file")")
   else
-    warn "未检测到 sha256sum 或 shasum，跳过 SHA256SUMS"
-    return 0
+    die "生成发布包必须提供 SHA256SUMS：未检测到 sha256sum 或 shasum"
   fi
   ok "校验文件：$checksum_file"
 }
@@ -246,14 +269,7 @@ write_checksums() {
 mkdir -p "$ARTEX_OUTPUT_DIR"
 if [ "$ARTEX_PACKAGE" = "1" ]; then mkdir -p "$ARTEX_PACKAGE_DIR"; fi
 
-old_ifs="$IFS"
-IFS=','
-read -r -a targets <<< "$ARTEX_TARGETS"
-IFS="$old_ifs"
-[ "${#targets[@]}" -gt 0 ] || die "ARTEX_TARGETS 不能为空"
 for target in "${targets[@]}"; do
-  target="${target//[[:space:]]/}"
-  [ -n "$target" ] || continue
   build_target "$target"
 done
 

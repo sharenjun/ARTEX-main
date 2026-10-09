@@ -15,7 +15,8 @@ services:
     restart: unless-stopped
 
   artex:
-    image: tomicdd/artex:${ARTEX_TAG:-latest}
+    image: ${ARTEX_IMAGE:-dgddw/artex}:${ARTEX_TAG:-latest}
+    # 不固定 platform：Docker 根据宿主机自动选择 linux/amd64 或 linux/arm64。
     depends_on:
       postgres:
         condition: service_healthy

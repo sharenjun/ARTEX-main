@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "test": "node --experimental-strip-types --test src/lib/tests/*.test.mjs",
     "build": "next build",
     "build:static": "NEXT_EXPORT=1 next build",
     "start": "next start",

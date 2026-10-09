@@ -1,0 +1,38 @@
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test-layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
+      - name: Test package-local overlay runner
+        run: go test ./tests/run.go ./tests/run_test.go -count=1
+      # Existing integration tests require a separately configured PostgreSQL DB;
+      # compile every test (including the nested norma module) without hiding it.
+      - name: Test release package contracts
+        run: python3 tests/build_test.py
+      - name: Compile all Go test suites
+        run: go run ./tests/run.go --all -run '^$'
+      - name: Core portable unit tests
+        run: go run ./tests/run.go ./config ./notify ./selfupdate -count=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Frontend unit tests
+        working-directory: web
+        run: npm test

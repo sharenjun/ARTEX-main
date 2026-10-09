@@ -67,6 +67,39 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 > 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。
 
+### 发布产物与平台支持
+
+Docker Hub 镜像默认为 `dgddw/artex`：
+
+- 正式版本同时提供版本标签（例如 `vX.Y.Z`）和 `latest`；预发布只推版本标签，不覆盖 `latest`。
+- 每个镜像标签都是包含 **Linux AMD64 / ARM64** 的多架构清单，Docker 自动选择宿主机架构；不需要指定 `--platform`。
+- `docker-compose.yml` 同样不固定架构。可在 `.env` 用 `ARTEX_IMAGE` 自定义仓库，用 `ARTEX_TAG` 固定版本。
+
+```bash
+docker pull dgddw/artex:latest
+# 查看标签内的架构清单：
+docker buildx imagetools inspect dgddw/artex:latest
+```
+
+GitHub Release 的程序包为 `artex-X.Y.Z-系统-架构.zip`，每包包含内嵌前端的程序、对应系统的守护启动脚本、`skills`、示例配置及 README：
+
+| 系统 | 架构 | 文件后缀 |
+| --- | --- | --- |
+| Linux | AMD64 / ARM64 | `linux-amd64.zip` / `linux-arm64.zip` |
+| macOS | AMD64 / ARM64 | `darwin-amd64.zip` / `darwin-arm64.zip` |
+| Windows | AMD64 | `windows-amd64.zip` |
+
+同一 Release 附带覆盖这五个 zip 的 `SHA256SUMS`。下载程序包和清单到同一目录后可验证：
+
+```bash
+sha256sum --check SHA256SUMS  # Linux；需要同一版本的全部五个包
+shasum -a 256 -c SHA256SUMS  # macOS；需要同一版本的全部五个包
+```
+
+只下载当前平台时，可从清单中取对应的一行执行检查；Windows 可用 `Get-FileHash <程序包.zip> -Algorithm SHA256` 与清单对应值比对。
+
+维护者发布前需在 GitHub 仓库 Secrets 设置 `DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`（对目标仓库有推送权限）。可用仓库 Variable `DOCKERHUB_IMAGE` 覆盖默认镜像仓库。推送 `vX.Y.Z` 或 `vX.Y.Z-rc.1` 标签会触发发布；流程验证测试布局、构建五个平台、校验 zip、推送和检查双架构镜像，再创建 Release。本地可用 `ARTEX_BUILD_VERSION=vX.Y.Z ./build.sh --release` 生成全部程序包及校验清单。
+
 ### 方式一：一键安装脚本（推荐）
 
 ```bash
@@ -88,7 +121,7 @@ cd ARTEX
 git clone https://github.com/Autumn-27/ARTEX.git
 cd ARTEX
 cp .env.example .env          # 填 POSTGRES_PASSWORD、可选 ANTHROPIC_API_KEY
-docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
+docker compose up -d          # 拉取 dgddw/artex 镜像 + postgres
 # → http://localhost:8787
 ```
 
@@ -276,7 +309,11 @@ server {
 
 - 后端：`go run ./cmd/artex`（不带 `-tags embedui` 则不内嵌前端）
 - 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
-- 测试：`go test ./...`
+- Go 主模块测试：`go run ./tests/run.go`；主模块 + norma：`go run ./tests/run.go --all`
+- 指定包 / race：`go run ./tests/run.go -race ./sidequestion ./db ./server -run TestSide -count=1`
+- 前端测试：`cd web && npm test`（Node.js 22.6+，使用内置 TypeScript 类型擦除）
+- 发布脚本测试：`python tests/build_test.py`（需要 Bash；模拟 Go 编译，实际验证 zip 内容和 SHA256）
+- 测试目录与入口细节见 [`tests/README.md`](tests/README.md)。Go 测试文件放在各包的 `tests` 子目录，必须走 overlay 入口；直接 `go test ./...` 不会加载这些测试。
 - Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
 
 ---

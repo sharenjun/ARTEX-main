@@ -73,9 +73,17 @@ Mutating tools (Write/Edit/Bash) prompt for approval unless `-yes` is set. Suppl
 
 ## Tests
 
+From the ARTEX repository root (the SDK is a nested Go module):
+
 ```bash
-go test ./...
+go run ./tests/run.go --module norma
+# Or from this norma directory:
+go run ../tests/run.go --module norma
 ```
+
+Tests live in each package's `tests/` directory. The runner uses Go's overlay
+support to retain same-package access and the original fixture working directory.
+Do not use bare `go test ./...`: it does not load these relocated test sources.
 
 Coverage: both provider adapters over `httptest` SSE; the loop end-to-end with a scripted provider (tool execution, message threading, permission denial, max-turns, parallel reads); real tool execution in a temp dir; the permission pipeline matrix; compaction (auto-summary, circuit breaker, micro-compact); hooks (block/rewrite/Stop-gating); subagent dispatch + depth guard; and the MCP client over in-memory pipes.
 

@@ -14,3 +14,14 @@ bench/.env
 bench/scheduler.py
 bench/entrypoint_v2.sh
 bench/seed_v2.sh
+# Keep only the two Linux Docker binaries from local build outputs.
+.codegraph
+**/tests
+**/*_test.go
+dist/*
+!dist/amd64
+!dist/arm64
+dist/amd64/*
+dist/arm64/*
+!dist/amd64/artex
+!dist/arm64/artex

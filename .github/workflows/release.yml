@@ -1,14 +1,53 @@
 name: release
+
 on:
   push:
     tags: ["v*"]
 
 permissions:
-  contents: write # 创建 Release 需要
+  contents: read
+
+# Serialize publication so concurrent tags do not race to update latest.
+concurrency:
+  group: release-publication
+  cancel-in-progress: false
+
+env:
+  DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE || 'dgddw/artex' }}
 
 jobs:
-  # ① 前端静态导出（一次），产物给交叉编译各平台复用
+  verify:
+    uses: ./.github/workflows/tests.yml
+
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      stable: ${{ steps.version.outputs.stable }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Validate release tag
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Expected vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease" >&2
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$TAG" == *-* ]]; then
+            echo "stable=false" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "stable=true" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Export the frontend once and reuse it for all five cross-compiled binaries.
   frontend:
+    needs: [verify, prepare]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,12 +64,13 @@ jobs:
         with:
           name: web-dist
           path: web/out
+          if-no-files-found: error
 
-  # ② 五平台交叉编译（内嵌前端）+ 打 zip
   binaries:
     needs: frontend
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
           - { goos: linux, goarch: amd64 }
@@ -42,8 +82,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26"
-          cache: true
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
       - uses: actions/download-artifact@v4
         with:
           name: web-dist
@@ -55,13 +97,14 @@ jobs:
           ARTEX_BUILD_VERSION: ${{ github.ref_name }}
           ARTEX_SKIP_FRONTEND: "1"
           ARTEX_SKIP_NPM_CI: "1"
-          # UPX 自解压 ELF 在部分 Linux 内核、虚拟化和安全策略下会崩溃。
-          # Release 使用 Go linker 裁剪和 zip 压缩，优先保证可移植性。
+          # Prefer portability over UPX self-extracting binaries.
           ARTEX_COMPRESS: "0"
           ARTEX_PACKAGE: "1"
           ARTEX_PACKAGE_DIR: dist
-        run: |
-          ./build.sh --target "${ARTEX_TARGET_OS}/${ARTEX_TARGET_ARCH}"
+        run: ./build.sh --target "${ARTEX_TARGET_OS}/${ARTEX_TARGET_ARCH}"
+      - name: Verify package checksum
+        working-directory: dist
+        run: sha256sum --check SHA256SUMS
       - name: Smoke test Linux amd64 binary
         if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
         run: dist/artex-linux-amd64/artex -h
@@ -69,40 +112,20 @@ jobs:
         with:
           name: pkg-${{ matrix.goos }}-${{ matrix.goarch }}
           path: "dist/*.zip"
-      # Linux 生二进制单独上传，供 docker job 复用（免在镜像里重编前端+Go）
+          if-no-files-found: error
       - if: matrix.goos == 'linux'
         uses: actions/upload-artifact@v4
         with:
           name: bin-linux-${{ matrix.goarch }}
           path: dist/artex-linux-${{ matrix.goarch }}/artex
+          if-no-files-found: error
 
-  # ③ 汇总所有 zip → 创建 GitHub Release
-  release:
-    needs: binaries
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: pkg-*
-          merge-multiple: true
-          path: dist
-      - name: Generate checksums
-        working-directory: dist
-        run: sha256sum *.zip > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/*.zip
-            dist/SHA256SUMS
-          generate_release_notes: true
-
-  # ④ 多架构镜像 → 推 Docker Hub（复用 binaries 编好的 Linux 二进制，
-  #    镜像里只装工具 + 放二进制；arm64 仅需模拟 apt 层，构建快很多）
+  # Build one manifest list containing both native Linux architectures.
   docker:
-    needs: binaries
+    needs: [binaries, prepare]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4 # 取 Dockerfile 与 skills/
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: bin-linux-amd64
@@ -112,6 +135,8 @@ jobs:
           name: bin-linux-arm64
           path: dist/arm64
       - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -120,11 +145,13 @@ jobs:
       - uses: docker/metadata-action@v5
         id: meta
         with:
-          images: autumn27/artex
+          images: ${{ env.DOCKERHUB_IMAGE }}
+          flavor: latest=false
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.prepare.outputs.stable == 'true' }}
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -133,3 +160,58 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Verify published multi-architecture manifest
+        env:
+          TAG: ${{ github.ref_name }}
+          STABLE: ${{ needs.prepare.outputs.stable }}
+        run: |
+          verify_manifest() {
+            docker buildx imagetools inspect "$1" --raw > "$2"
+            jq -e \
+              '[.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort == ["amd64", "arm64"]' "$2"
+          }
+          verify_manifest "$DOCKERHUB_IMAGE:$TAG" release-manifest.json
+          if [ "$STABLE" = true ]; then
+            verify_manifest "$DOCKERHUB_IMAGE:latest" latest-manifest.json
+            cmp release-manifest.json latest-manifest.json
+          fi
+      - name: Smoke test both published Linux images
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          for arch in amd64 arm64; do
+            docker run --rm --platform "linux/$arch" --entrypoint /app/artex "$DOCKERHUB_IMAGE:$TAG" -h
+          done
+
+  # Publish only after all five packages and the Docker manifest are verified.
+  release:
+    needs: [binaries, docker, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pkg-*
+          merge-multiple: true
+          path: dist
+      - name: Verify complete release and generate checksums
+        working-directory: dist
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          test "$(find . -maxdepth 1 -name '*.zip' | wc -l)" -eq 5
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do
+            test -s "artex-${VERSION}-${target}.zip"
+          done
+          sha256sum *.zip > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          prerelease: ${{ needs.prepare.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.prepare.outputs.stable == 'true' && 'true' || 'false' }}
+          generate_release_notes: true
