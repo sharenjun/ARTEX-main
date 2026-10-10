@@ -36,3 +36,43 @@ jobs:
       - name: Frontend unit tests
         working-directory: web
         run: npm test
+
+  finding-case-regression:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: artex_test
+          POSTGRES_DB: artex_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d artex_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ARTEX_PG_DSN: postgres://postgres:artex_test@localhost:5432/artex_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            norma/go.sum
+      # Exercise the original report/retest paths alongside the new case layer.
+      - name: Finding case and existing workflow regression
+        run: go run ./tests/run.go -race ./agent ./db ./server -run 'TestFindingCase|TestFindingWorkflow|TestReportFinding|TestRetest|TestFindingGroups|TestDeepenFinding|TestInheritedActivity|TestConversationListRunningState|TestMerge|TestFinalTrigger|TestTaskContext' -count=1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
+      - name: Build frontend
+        working-directory: web
+        run: npm run build
