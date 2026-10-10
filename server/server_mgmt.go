@@ -27,6 +27,7 @@ import (
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/skill"
+	"gopkg.in/yaml.v3"
 )
 
 // validSkillName checks the agentskills.io name constraints, widened so a skill can
@@ -1194,57 +1195,84 @@ func rewriteSkillFrontmatter(content []byte, mcps *[]string, description, licens
 	if fmEnd < 0 {
 		return nil, fmt.Errorf("SKILL.md frontmatter is not closed")
 	}
-	// Collect existing key → value from frontmatter (preserve unknown keys)
-	type kv struct{ k, v string }
-	var pairs []kv
-	for _, l := range lines[1:fmEnd] {
-		if idx := strings.IndexByte(l, ':'); idx >= 0 {
-			pairs = append(pairs, kv{strings.TrimSpace(l[:idx]), strings.TrimSpace(l[idx+1:])})
-		} else if strings.TrimSpace(l) != "" {
-			pairs = append(pairs, kv{"", l}) // preserve non-key lines verbatim
-		}
+	// Use the same YAML semantics as the runtime loader. Line-based rewriting can
+	// corrupt block values and lists, then report success for unreadable metadata.
+	var document yaml.Node
+	if err := yaml.Unmarshal([]byte(strings.Join(lines[1:fmEnd], "\n")), &document); err != nil {
+		return nil, fmt.Errorf("SKILL.md has invalid YAML frontmatter: %w", err)
 	}
-	// Apply updates (nil pointer = no change)
-	applyStr := func(key string, val *string) {
-		if val == nil {
-			return
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("SKILL.md YAML frontmatter must be a mapping")
+	}
+	head := document.Content[0]
+	var metadata struct {
+		Name          string `yaml:"name"`
+		Description   string `yaml:"description"`
+		License       string `yaml:"license"`
+		Compatibility string `yaml:"compatibility"`
+		WhenToUse     string `yaml:"whenToUse"`
+		WhenToUseUS   string `yaml:"when_to_use"`
+	}
+	if err := head.Decode(&metadata); err != nil {
+		return nil, fmt.Errorf("SKILL.md has invalid YAML frontmatter: %w", err)
+	}
+	setField := func(key string, value any) error {
+		var node yaml.Node
+		if err := node.Encode(value); err != nil {
+			return fmt.Errorf("encode skill field %s: %w", key, err)
 		}
-		for i, p := range pairs {
-			if p.k == key {
-				pairs[i].v = strings.TrimSpace(*val)
-				return
+		for i := 0; i < len(head.Content); i += 2 {
+			if head.Content[i].Value == key {
+				head.Content[i+1] = &node
+				return nil
 			}
 		}
-		pairs = append(pairs, kv{key, strings.TrimSpace(*val)})
+		head.Content = append(head.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}, &node)
+		return nil
 	}
-	applyStr("description", description)
-	applyStr("license", license)
-	applyStr("compatibility", compatibility)
+	for _, update := range []struct {
+		key   string
+		value *string
+	}{
+		{key: "description", value: description},
+		{key: "license", value: license},
+		{key: "compatibility", value: compatibility},
+	} {
+		if update.value == nil {
+			continue
+		}
+		if err := setField(update.key, strings.TrimSpace(*update.value)); err != nil {
+			return nil, err
+		}
+	}
 	if mcps != nil {
-		cleaned := cleanStrs(*mcps)
-		// Remove existing mcps line
-		filtered := pairs[:0]
-		for _, p := range pairs {
-			if p.k != "mcps" {
-				filtered = append(filtered, p)
+		// Remove the legacy alias too, so clearing mcps cannot revive an old mcp.
+		fields := head.Content[:0]
+		for i := 0; i < len(head.Content); i += 2 {
+			key := head.Content[i].Value
+			if key != "mcps" && key != "mcp" {
+				fields = append(fields, head.Content[i], head.Content[i+1])
 			}
 		}
-		pairs = filtered
-		if len(cleaned) > 0 {
-			pairs = append(pairs, kv{"mcps", strings.Join(cleaned, ", ")})
+		head.Content = fields
+		if cleaned := cleanStrs(*mcps); len(cleaned) > 0 {
+			if err := setField("mcps", cleaned); err != nil {
+				return nil, err
+			}
 		}
 	}
-	// Reconstruct
+	var frontmatter bytes.Buffer
+	encoder := yaml.NewEncoder(&frontmatter)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(head); err != nil {
+		return nil, fmt.Errorf("encode skill frontmatter: %w", err)
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("close skill frontmatter encoder: %w", err)
+	}
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	for _, p := range pairs {
-		if p.k == "" {
-			sb.WriteString(p.v)
-		} else {
-			fmt.Fprintf(&sb, "%s: %s", p.k, p.v)
-		}
-		sb.WriteByte('\n')
-	}
+	sb.Write(frontmatter.Bytes())
 	sb.WriteString("---\n")
 	// Body (lines after closing ---)
 	if fmEnd+1 < len(lines) {

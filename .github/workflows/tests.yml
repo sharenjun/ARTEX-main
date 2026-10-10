@@ -30,6 +30,8 @@ jobs:
         run: go run ./tests/run.go --all -run '^$'
       - name: Core portable unit tests
         run: go run ./tests/run.go ./config ./notify ./selfupdate -count=1
+      - name: Skill metadata and upload regression
+        run: go run ./tests/run.go -race ./server -run 'TestSkillMeta|TestBundledScopeSentryMetadata|TestUploadSkill|TestValidSkillName|TestSkillRelPath|TestSkillNameFromFrontmatter' -count=1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
