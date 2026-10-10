@@ -190,6 +190,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+      - name: Read version notes from changelog
+        id: notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          awk -v version="$VERSION" '
+            index($0, "## [" version "]") == 1 { found=1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          # Keep automatic notes for tags with no version section yet.
+          if grep -q '[^[:space:]]' release-notes.md; then
+            echo "path=release-notes.md" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v4
         with:
           pattern: pkg-*
@@ -208,6 +223,7 @@ jobs:
           sha256sum --check SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: ${{ steps.notes.outputs.path }}
           files: |
             dist/*.zip
             dist/SHA256SUMS
