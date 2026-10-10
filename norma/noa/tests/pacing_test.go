@@ -51,6 +51,25 @@ func TestSuppressionReleaseFitsInsideTheWindow(t *testing.T) {
 	}
 }
 
+// Hosts can retain absolute pacing knobs after switching to a smaller model.
+// The cadence shared with suppression must still fit before emergency pressure.
+func TestSuppressionReleaseCapsAbsoluteFloorOnSmallWindows(t *testing.T) {
+	for _, window := range []int{8_000, 40_000, 64_000} {
+		cfg := DefaultConfig(window)
+		cfg.Nudge.GrowthFloor = 50_000
+		cfg.Nudge.MinGrowthFloor = 20_000
+		floor := NudgeGrowthFloor(cfg)
+		room := int(float64(window) * (cfg.Nudge.EmergencyThresholdPct - cfg.Nudge.MaxContextLimitPct))
+		if floor <= 0 || floor > room {
+			t.Errorf("window %d: cadence %d exceeds %d tokens before emergency", window, floor, room)
+		}
+		d := DecideNudge(DecideNudgeInput{State: CreateInitialState("s", ""), Config: cfg})
+		if d.Breakdown.GrowthFloor != floor {
+			t.Errorf("window %d: decision uses cadence %d, suppression uses %d", window, d.Breakdown.GrowthFloor, floor)
+		}
+	}
+}
+
 // The emergency band exists because at that pressure the next request may not
 // fit at all. One nudge costs a couple of thousand tokens; an overflow costs the
 // turn. So the failure ladder must not be able to silence the emergency voice.
@@ -76,9 +95,6 @@ func TestEmergencyPressureIsNudgedEvenWhenSuppressed(t *testing.T) {
 		t.Fatalf("the decision at 96%% pressure is not flagged emergency: %+v", d.Breakdown)
 	}
 
-	// The host-side gate is what suppression acts on. It is a separate decision
-	// from DecideNudge, and it currently has no knowledge of pressure at all —
-	// see Session.nudgeAllowed, which branches only on attempts and growth.
-	// This test documents the seam; the assertion belongs with the host, in
-	// noaadapter.TestSuppressionSurvivesIntoTheEmergencyBand.
+	// The host-side gate is covered in
+	// noaadapter.TestNudgeSuppressionLiftsOnEmergencyEntry.
 }

@@ -5,7 +5,7 @@ import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon } from "lucide-react";
+import { ArchiveIcon, ArrowLeftIcon, BrainIcon, CheckIcon, CircleAlertIcon, PauseIcon, PlayIcon, RadioIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -166,6 +166,16 @@ function TaskLLMControl({ task, profiles, onUpdated }: { task: Task; profiles: L
           <PopoverTitle>任务 LLM 配置链</PopoverTitle>
           <PopoverDescription>{editorDescription}</PopoverDescription>
         </PopoverHeader>
+
+        <p className="text-sm text-muted-foreground">
+          模型优先级：Agent 角色绑定 → 任务配置链 → 全局默认。修改全局模型或重启任务不会覆盖已有的角色绑定和任务配置链；余额不足时，请在这里更换配置，或清空任务链以跟随全局默认。角色绑定可在 Agent 设置中调整。
+        </p>
+        <Button variant="outline" size="sm" asChild>
+          <Link href={`/function/llm-records/?task=${encodeURIComponent(task.id)}`}>
+            <RadioIcon data-icon="inline-start" />
+            查看此任务 LLM 录制
+          </Link>
+        </Button>
 
         {exhausted && (
           <Alert variant="destructive">

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -202,6 +203,11 @@ func TestArchiverConcurrentWrites(t *testing.T) {
 // A compression whose archive cannot be written must not create a block: the
 // block would claim originals that are not there.
 func TestCompressFailsWhenArchiveDirIsUnwritable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Chmod does not enforce Unix directory write bits on Windows. Keep the
+		// archive failure assertion on platforms where this fixture is meaningful.
+		t.Skip("Windows does not enforce Unix directory permissions via chmod")
+	}
 	base := t.TempDir()
 	opts := baseOptions()
 	sess, err := EnableWithSession(&opts, Options{ArchiveBaseDir: base, SessionID: "ro"})

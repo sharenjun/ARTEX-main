@@ -38,7 +38,14 @@ func (c *Compactor) View(_ context.Context, msgs []llm.Message) []llm.Message {
 // compaction already recognises every provider's phrasing, so the detection is
 // borrowed rather than duplicated.
 func (c *Compactor) IsOverflow(err error) bool {
-	return compaction.New(compaction.Config{}, nil).IsOverflow(err)
+	if !compaction.IsOverflow(err) {
+		return false
+	}
+	if window := ParseOverflowWindow(err.Error()); window > 0 {
+		c.overflow.learn(window)
+		c.sess.learnContextWindow(window)
+	}
+	return true
 }
 
 // Reactive recovers from a prompt-too-long error.

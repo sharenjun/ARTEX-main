@@ -4,6 +4,7 @@ package noaadapter
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -127,6 +128,73 @@ func TestNudgeSuppressionLiftsAfterGrowth(t *testing.T) {
 	}
 	if !viewHasNudge(sess.View(msgs)) {
 		t.Fatal("suppression did not lift after the context grew a full cadence step")
+	}
+}
+
+func TestNudgeSuppressionLiftsOnEmergencyEntry(t *testing.T) {
+	sess, msgs := pressureSession(t)
+	msgs = append(msgs, llm.Message{Role: llm.RoleAssistant,
+		Content: []llm.ContentBlock{llm.TextBlock("continuing")}})
+	cfg := sess.Config()
+	emergency := int(float64(cfg.ModelContextLimit) * cfg.Nudge.EmergencyThresholdPct)
+	sess.attempts = cfg.MaxCompressAttempts
+	sess.suppressedAtTokens = emergency - 1
+	sess.noteProviderTokens(emergency)
+	if !viewHasNudge(sess.View(msgs)) {
+		t.Fatal("entering emergency did not release a suppressed compression prompt")
+	}
+	// Once the model declines the emergency prompts, the same token count must
+	// be suppressed again. Otherwise an emergency override causes an endless
+	// sequence of unusable compression requests.
+	for range cfg.MaxCompressAttempts {
+		msgs = append(msgs, llm.Message{Role: llm.RoleAssistant,
+			Content: []llm.ContentBlock{llm.TextBlock("continuing")}})
+		sess.View(msgs)
+	}
+	if viewHasNudge(sess.View(msgs)) {
+		t.Fatal("failed emergency attempts bypassed suppression repeatedly")
+	}
+}
+
+func TestNudgeSuppressionUsesLearnedWindow(t *testing.T) {
+	sess := simSession(t, 400_000)
+	(&Compactor{sess: sess}).IsOverflow(errors.New("maximum context length is 40000 tokens"))
+	a := newSimAgent(t, sess, 1_000_000)
+	for range 12 {
+		a.work(12_000)
+	}
+	sess.attempts = sess.Config().MaxCompressAttempts
+	sess.suppressedAtTokens = 30_000
+	// 5000 is enough to release suppression in the actual 40K window (cadence
+	// 4500), but not in the configured 400K window (cadence 9000).
+	sess.noteProviderTokens(35_000)
+	if !viewHasNudge(sess.View(a.history)) {
+		t.Fatal("suppression kept using the larger configured window")
+	}
+}
+
+func TestNudgeSuppressionResetsWhenWindowShrinks(t *testing.T) {
+	sess := simSession(t, 200_000)
+	c := &Compactor{sess: sess}
+	sess.attempts = sess.Config().MaxCompressAttempts
+	sess.suppressedAtTokens = 150_000
+	sess.lastTokenCount = 150_000
+	c.IsOverflow(errors.New("maximum context length is 40000 tokens"))
+	a := newSimAgent(t, sess, 1_000_000)
+	for range 12 {
+		a.work(12_000)
+	}
+	if !viewHasNudge(sess.View(a.history)) {
+		t.Fatal("old-window suppression silenced the learned-window recovery prompt")
+	}
+	// Repeating the same rejection does not represent a newly learned window
+	// and must not keep resetting a failed emergency ladder.
+	sess.attempts = sess.Config().MaxCompressAttempts
+	sess.suppressedAtTokens = 39_000
+	sess.nudgedLastTurn = false
+	c.IsOverflow(errors.New("maximum context length is 40000 tokens"))
+	if sess.attempts != sess.Config().MaxCompressAttempts || sess.suppressedAtTokens != 39_000 {
+		t.Fatal("an unchanged provider limit repeatedly reset suppression")
 	}
 }
 

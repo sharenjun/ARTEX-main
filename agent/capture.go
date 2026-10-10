@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +14,8 @@ import (
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
 )
+
+var errEmptyModelResponse = errors.New("本轮模型未返回可用文本或工具调用；请检查模型配置、接口格式与 LLM 录制原文")
 
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a
 // coalesced ActivityRecord per execution step (tool_use / tool_result / text /
@@ -77,6 +80,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 
 	var finalText string
 	var rerr error
+	var producedWork bool // only this Prompt, never earlier session history
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
 			flush()
@@ -93,6 +97,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			if ev.ToolUse == nil {
 				continue
 			}
+			producedWork = true
 			flush()
 			toolNames[ev.ToolUse.ID] = ev.ToolUse.Name
 			in := string(ev.ToolUse.Input)
@@ -111,6 +116,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
 				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
 		case harness.KindText:
+			producedWork = producedWork || strings.TrimSpace(ev.Text) != ""
 			addDelta("text", ev.Text)
 		case harness.KindThinking:
 			addDelta("thinking", ev.Text)
@@ -128,29 +134,42 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			}
 		case harness.KindResult:
 			if ev.Terminal != nil {
-				if ev.Terminal.Reason != harness.ReasonAbortedStreaming {
-					sidequestion.Finish(ctx, ev.Terminal.Messages)
+				terminal := *ev.Terminal
+				// A planner can finish silently after writing via tools. Only a whole
+				// run with no usable output is an error; per-request checks would
+				// reject that legitimate tool-then-stop behavior.
+				if terminal.Reason == harness.ReasonCompleted && terminal.Err == nil &&
+					!producedWork && strings.TrimSpace(terminal.Text) == "" {
+					terminal.Reason = harness.ReasonModelError
+					terminal.Err = errEmptyModelResponse
+					terminal.Text = ""
 				}
-				finalText = ev.Terminal.Text
-				reason = ev.Terminal.Reason
+				if terminal.Reason != harness.ReasonAbortedStreaming {
+					sidequestion.Finish(ctx, terminal.Messages)
+				}
+				finalText = terminal.Text
+				reason = terminal.Reason
 				// the buffered tail text usually equals Terminal.Text (final answer);
 				// drop it to avoid a duplicate record, the result row carries it.
-				if tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(ev.Terminal.Text) {
+				if tkind == "text" && strings.TrimSpace(tbuf.String()) == strings.TrimSpace(terminal.Text) {
 					tbuf.Reset()
 					tkind = ""
 				}
 				flush() // flush any trailing thinking / non-final text
-				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
-					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
+				sum, detail := terminal.Text, terminal.Text
+				if sum == "" || terminal.Reason == harness.ReasonAbortedTools || terminal.Reason == harness.ReasonAbortedStreaming {
+					sum, detail = terminalText(ctx, &terminal, lastTool)
 				}
-				u := ev.Terminal.Usage // cumulative token usage for this session
-				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
+				if errors.Is(terminal.Err, errEmptyModelResponse) {
+					sum = errEmptyModelResponse.Error()
+				}
+				u := terminal.Usage // cumulative token usage for this session
+				rec(db.Activity{Kind: "result", IsError: terminal.Err != nil,
 					Summary: firstLine(sum, 400), Detail: detail,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
 					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
-				if ev.Terminal.Err != nil {
-					rerr = ev.Terminal.Err
+				if terminal.Err != nil {
+					rerr = terminal.Err
 				}
 			}
 		}

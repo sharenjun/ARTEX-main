@@ -82,6 +82,9 @@ type Session struct {
 	// emergencyFloor, when non-zero, forces the view to build under this ceiling
 	// after a prompt-too-long error taught us the real window.
 	emergencyFloor int
+	// learnedContextWindow keeps a provider's smaller limit even when a reactive
+	// rebuild cannot shrink. Later turns must still use the known actual window.
+	learnedContextWindow int
 	// deadRange refuses a range set the model keeps resubmitting.
 	deadRange *DeadRangeTracker
 	// lastCompressAt is Stats.CompressionCount at the last successful
@@ -186,10 +189,15 @@ func (s *Session) View(msgs []llm.Message) []llm.Message {
 	s.notePriorTurnOutcome(msgs)
 
 	cfg := s.cfg
+	if s.learnedContextWindow > 0 {
+		cfg.ModelContextLimit = s.learnedContextWindow
+	}
 	if s.emergencyFloor > 0 {
 		// A prompt-too-long error taught us the real window. Build to it, rather
 		// than to the configured one that just failed.
-		cfg.ModelContextLimit = s.emergencyFloor
+		if cfg.ModelContextLimit <= 0 || s.emergencyFloor < cfg.ModelContextLimit {
+			cfg.ModelContextLimit = s.emergencyFloor
+		}
 	}
 
 	res := noa.ProcessTurn(noa.ProcessTurnInput{
@@ -204,7 +212,7 @@ func (s *Session) View(msgs []llm.Message) []llm.Message {
 
 	view := res.Messages
 	s.nudgedLastTurn = false
-	if res.Nudge != nil && s.nudgeAllowed(tokens) {
+	if res.Nudge != nil && s.nudgeAllowed(tokens, cfg) {
 		voice, text := noa.RenderNudgeText(*res.Nudge, noa.NudgeSections{})
 		_ = voice
 		view = append(view, noa.CoreMessage{
@@ -229,14 +237,18 @@ func (s *Session) View(msgs []llm.Message) []llm.Message {
 //
 // Suppression is not permanent. It lifts once the context has grown by a full
 // cadence step, because by then the situation genuinely differs from the one
-// the model declined to act on. Without that release the first three failures
-// in a session would silence nudging for good. Callers hold the lock.
-func (s *Session) nudgeAllowed(tokenCount int) bool {
+// the model declined to act on. Entering the emergency band also releases the
+// ladder once: a failed set of emergency attempts is suppressed again until
+// meaningful growth, rather than replayed forever. Callers hold the lock.
+func (s *Session) nudgeAllowed(tokenCount int, cfg noa.Config) bool {
 	if s.attempts < s.cfg.MaxCompressAttempts {
 		return true
 	}
-	floor := noa.NudgeGrowthFloor(s.cfg)
-	if tokenCount-s.suppressedAtTokens >= floor {
+	floor := noa.NudgeGrowthFloor(cfg)
+	emergency := int(float64(cfg.ModelContextLimit) * cfg.Nudge.EmergencyThresholdPct)
+	enteredEmergency := cfg.ModelContextLimit > 0 && tokenCount >= emergency &&
+		s.suppressedAtTokens < emergency
+	if enteredEmergency || tokenCount-s.suppressedAtTokens >= floor {
 		s.attempts = 0
 		s.suppressedAtTokens = 0
 		return true
@@ -438,6 +450,34 @@ func (s *Session) setEmergencyFloor(n int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.emergencyFloor = n
+}
+
+// learnContextWindow only tightens the limit. A later error mentioning a larger
+// number must not undo a smaller window already reported by the provider.
+func (s *Session) learnContextWindow(n int) {
+	if n <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.ModelContextLimit > 0 {
+		n = min(n, s.cfg.ModelContextLimit)
+	}
+	if s.learnedContextWindow == 0 || n < s.learnedContextWindow {
+		previous := s.cfg.ModelContextLimit
+		if s.learnedContextWindow > 0 {
+			previous = s.learnedContextWindow
+		}
+		s.learnedContextWindow = n
+		if previous <= 0 || n < previous {
+			// Suppression anchors belong to the old window. A count above the new
+			// emergency band would otherwise prevent both growth and emergency
+			// release. Give the newly discovered pressure one fresh set of attempts.
+			s.attempts = 0
+			s.suppressedAtTokens = 0
+			s.nudgedLastTurn = false
+		}
+	}
 }
 
 // tokensBefore reports the current view's size, for the panel headline.

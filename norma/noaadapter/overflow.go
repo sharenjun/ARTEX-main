@@ -24,7 +24,7 @@ func (o *overflowState) arm(configured int) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.armed = true
-	if o.learnedWindow == 0 {
+	if configured > 0 && (o.learnedWindow == 0 || configured < o.learnedWindow) {
 		o.learnedWindow = configured
 	}
 }
@@ -53,7 +53,9 @@ func (o *overflowState) learn(window int) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.learnedWindow = window
+	if o.learnedWindow == 0 || window < o.learnedWindow {
+		o.learnedWindow = window
+	}
 }
 
 // windowPatterns extract the real context window from an overflow error.
@@ -61,11 +63,12 @@ func (o *overflowState) learn(window int) {
 var windowPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)maximum context length is (\d+)`),
 	regexp.MustCompile(`(?i)context (?:window|length) (?:of|is) (\d+)`),
-	regexp.MustCompile(`(?i)max(?:imum)?[ _-]?tokens?[^0-9]{0,20}(\d{4,})`),
-	regexp.MustCompile(`(?i)limit(?:ed)? to (\d{4,}) tokens`),
+	regexp.MustCompile(`(?i)(?:max(?:imum)?[ _-]?context[ _-]?(?:tokens?|length)|context[ _-]?(?:limit|window|length))["']?\s*[:=]\s*["']?(\d+)`),
+	regexp.MustCompile(`(?i)prompt (?:is )?too long:[^\n]*?\d+ tokens?\s*>\s*(\d+) (?:maximum|max)`),
 }
 
-// ParseOverflowWindow extracts a context window size from an error message.
+// ParseOverflowWindow extracts an explicit context window from an error. Output
+// budgets such as max_tokens and rate limits are not context window evidence.
 func ParseOverflowWindow(msg string) int {
 	for _, re := range windowPatterns {
 		if m := re.FindStringSubmatch(msg); m != nil {
