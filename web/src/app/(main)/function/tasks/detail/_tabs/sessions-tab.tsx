@@ -77,6 +77,14 @@ function resolutionLabel(r: TaskLLMResolution): string {
   return r.name || r.model || "未命名配置";
 }
 
+function resolutionSource(r: TaskLLMResolution): string {
+  switch (r.source) {
+    case "agent_binding": return "Agent 角色绑定";
+    case "task_chain": return "任务配置链";
+    default: return "全局默认";
+  }
+}
+
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 function fmtBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
@@ -1763,7 +1771,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                       variant="outline"
                       className="max-w-28 shrink-0 font-normal"
                       aria-label={
-                        activeResolution.available ? `当前配置：${resolutionLabel(activeResolution)}` : "模型不可用"
+                        activeResolution.available
+                          ? `下一次调用：${resolutionLabel(activeResolution)} · ${resolutionSource(activeResolution)}`
+                          : "模型不可用"
                       }
                     >
                       <span className="truncate">
@@ -1773,7 +1783,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                   </TooltipTrigger>
                   <TooltipContent side="bottom" className="max-w-xs [overflow-wrap:anywhere]">
                     {activeResolution.available
-                      ? [resolutionLabel(activeResolution), activeResolution.model].filter(Boolean).join(" / ")
+                      ? [resolutionLabel(activeResolution), activeResolution.model, `来源：${resolutionSource(activeResolution)}`, "用于下一次调用，历史回合实际模型请查看 LLM 录制"].filter(Boolean).join(" / ")
                       : activeResolution.reason || "没有可用的 LLM 配置"}
                   </TooltipContent>
                 </Tooltip>

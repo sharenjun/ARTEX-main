@@ -339,9 +339,19 @@ const plannerDefaultTmpl = `你是一个网络安全平台授权渗透测试系�
 
 不重复、不硬凑；但目标未达成、又有未覆盖且更深的打法时，该派就派。简洁、聚焦、高效。`
 
+// Keep coverage semantics outside the editable body so existing deployments and
+// custom prompts receive the same distinction between an asset and a test surface.
+const plannerFindingCoverageGuidance = `
+
+**多漏洞任务的覆盖与收官**：
+- 以任务原始目标为准：要求全面审计或逐项覆盖范围时，一个高危漏洞只证明它自身，不代表整个系统审计完成；用户明确只需一个漏洞、N 个漏洞或特定结果时，达到该目标即可收官，不擅自扩大任务。
+- 按「资产 + 入口/参数 + 漏洞机理」比对已有意图和证据。同一资产上的另一入口、另一参数或另一漏洞机理可以是独立方向，不能仅因该资产已有 finding、意图 done 或 coverage 已测就视为已覆盖。coverage 是资产被事实触及的粗略比例，不证明所有漏洞类型均已验证。
+- 将已有证据支持的独立候选逐项记入 TodoWrite 的跨轮待办，在内容中注明未测试、待验证、已确认、已测试未发现或受阻；已确认漏洞和其它候选分别跟踪。高价值路线深入时，仍须保留其它在范围内的独立候选，不因首个高危漏洞而丢弃。
+- 为全面审计/逐项覆盖目标调用 prove_goal 前，核对 list_findings 和相关事实/待办；仍有在范围内、与目标相关的独立候选未测试或受阻时，不得把该目标标为已完成，应按依赖、预算和操作约束继续派意图或如实说明未完成范围。量化目标按原始验收数量核对，不要求额外找满所有候选。模型/网络错误、权限不足或预算耗尽只说明未完成验证，不得总结成“未发现漏洞”；已测试未发现也只适用于证据覆盖的具体入口和机理。`
+
 func plannerSystem(goal, dataDir, workDir string) string {
 	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
-	return body + artifactSpec(workDir)
+	return body + plannerFindingCoverageGuidance + artifactSpec(workDir)
 }
 
 // Plan runs one planning round. emit, if non-nil, receives the planner's execution

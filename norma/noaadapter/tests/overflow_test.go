@@ -5,6 +5,7 @@ package noaadapter
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/Autumn-27/norma/llm"
@@ -83,23 +84,20 @@ func TestIsOverflowRecognisesProviderPhrasings(t *testing.T) {
 	}
 }
 
-// overflowState documents itself as mining the error for the provider's real
-// window — "rather than guessing again next turn, the error is mined for the
-// actual number and the mechanical valve is armed so the next view is built to
-// fit."
-//
-// Nothing does that. ParseOverflowWindow and overflowState.learn have no callers
-// anywhere in the tree: harness.Compactor.Reactive receives only the message
-// array, and IsOverflow — the one method that does see the error — throws it
-// away. So arm() always falls back to the CONFIGURED limit, which is exactly the
-// number the provider just rejected.
-//
-// Either wire learning in (IsOverflow is the natural place: it already has the
-// error) or delete the mechanism and the comment that promises it. Leaving it is
-// the worst option, because the comment describes behaviour the code does not
-// have.
+// The harness detects overflow before calling Reactive. That sequence must
+// learn the actual window, shrink the request to it, and keep using it next turn.
 func TestOverflowLearningIsWiredIn(t *testing.T) {
 	c := &Compactor{sess: simSession(t, 200000)}
+	a := newSimAgent(t, c.sess, 1_000_000)
+	for range 10 {
+		a.work(60_000)
+	}
+	c.View(t.Context(), a.history)
+	before := c.sess.sentTokens()
+	if before <= 128_000 {
+		t.Fatalf("fixture is only %d tokens; it must exceed the actual window", before)
+	}
+	original := renderView(a.history)
 
 	// The provider says its real window is 128000, not the configured 200000.
 	err := errors.New("This model's maximum context length is 128000 tokens, however you requested 214000")
@@ -108,32 +106,123 @@ func TestOverflowLearningIsWiredIn(t *testing.T) {
 	}
 
 	// The loop's actual sequence: detect, then recover.
-	c.IsOverflow(err)
-	c.Reactive(t.Context(), nil)
+	if !c.IsOverflow(err) {
+		t.Fatal("provider overflow was not recognised")
+	}
+	if _, ok := c.Reactive(t.Context(), a.history); !ok {
+		t.Fatal("large tool results did not produce a fitting reactive view")
+	}
 
 	floor := c.overflow.armedFloor()
-	if floor == 0 {
-		t.Skip("Reactive disarmed because it could not shrink an empty view")
-	}
 	want := int(float64(128000) * 0.95)
 	if floor != want {
-		t.Fatalf("the armed floor is %d (95%% of the CONFIGURED %d), not %d (95%% of the %d "+
-			"the provider reported). ParseOverflowWindow and overflowState.learn have no "+
-			"callers, so the learned window is never learned and the next view is rebuilt to "+
-			"a limit the provider has already rejected.",
-			floor, c.sess.Config().ModelContextLimit, want, 128000)
+		t.Fatalf("armed floor = %d, want %d from the actual provider window", floor, want)
+	}
+	if after := c.sess.sentTokens(); after >= before || after > floor {
+		t.Fatalf("reactive view = %d tokens, before = %d, learned ceiling = %d", after, before, floor)
+	}
+	if renderView(a.history) != original {
+		t.Fatal("reactive recovery changed stored history")
+	}
+	a.work(60_000)
+	if n := estimateMessages(c.View(t.Context(), a.history)); n > floor {
+		t.Fatalf("next turn ignored the learned floor: %d > %d", n, floor)
+	}
+}
+
+func TestOverflowLearningKeepsTheSmallestWindow(t *testing.T) {
+	c := &Compactor{sess: simSession(t, 200_000)}
+	for _, msg := range []string{
+		"maximum context length is 128000 tokens",
+		"maximum context length is 160000 tokens",
+		"maximum context length is 100000 tokens",
+		"maximum context length is 256000 tokens",
+	} {
+		if !c.IsOverflow(errors.New(msg)) {
+			t.Fatalf("did not recognise %q", msg)
+		}
+	}
+	c.overflow.arm(c.sess.Config().ModelContextLimit)
+	if got := c.overflow.armedFloor(); got != 95_000 {
+		t.Fatalf("learned ceiling expanded: %d, want 95000", got)
+	}
+	if c.sess.learnedContextWindow != 100_000 {
+		t.Fatalf("session window expanded: %d", c.sess.learnedContextWindow)
+	}
+}
+
+func TestOverflowLearningIgnoresUnrelatedErrors(t *testing.T) {
+	c := &Compactor{sess: simSession(t, 200_000)}
+	if c.IsOverflow(errors.New("rate limit: requests are limited to 32000 tokens per minute")) {
+		t.Fatal("rate limit treated as a context overflow")
+	}
+	if c.overflow.learnedWindow != 0 || c.sess.learnedContextWindow != 0 {
+		t.Fatal("unrelated error changed the context window")
+	}
+}
+
+func TestOverflowLearningSeparatesContextAndOutputBudgets(t *testing.T) {
+	c := &Compactor{sess: simSession(t, 200_000)}
+	err := errors.New(`status 413: {"error":"prompt too long","max_tokens":8192,"context_limit":128000}`)
+	if !c.IsOverflow(err) {
+		t.Fatal("provider overflow was not recognised")
+	}
+	c.overflow.arm(c.sess.Config().ModelContextLimit)
+	if floor := c.overflow.armedFloor(); floor != 121_600 || c.sess.learnedContextWindow != 128_000 {
+		t.Fatalf("output budget used as context window: floor=%d window=%d", floor, c.sess.learnedContextWindow)
+	}
+
+	c = &Compactor{sess: simSession(t, 200_000)}
+	if !c.IsOverflow(errors.New(`status 413: {"error":"prompt too long","max_tokens":8192}`)) {
+		t.Fatal("overflow without a reported window was not recognised")
+	}
+	if c.overflow.learnedWindow != 0 || c.sess.learnedContextWindow != 0 {
+		t.Fatal("output-only budget reduced the context window")
+	}
+}
+
+func TestOverflowLearningSurvivesAnUnshrinkableView(t *testing.T) {
+	c := &Compactor{sess: simSession(t, 200_000)}
+	msgs := []llm.Message{userText(strings.Repeat("x", 160_000))}
+	c.View(t.Context(), msgs)
+	if !c.IsOverflow(errors.New("maximum context length is 32000 tokens")) {
+		t.Fatal("provider overflow was not recognised")
+	}
+	if _, ok := c.Reactive(t.Context(), msgs); ok {
+		t.Fatal("reactive claimed success without shrinking protected user content")
+	}
+	if c.overflow.armedFloor() != 0 || c.sess.emergencyFloor != 0 {
+		t.Fatal("failed reactive attempt left the mechanical valve armed")
+	}
+	if c.sess.learnedContextWindow != 32_000 {
+		t.Fatal("failed reactive attempt forgot the actual provider window")
+	}
+	// The next turn must apply the known 32K window even though reactive could
+	// not shrink the previous request. Large old tool results now can be cut.
+	a := newSimAgent(t, c.sess, 1_000_000)
+	for range 12 {
+		a.work(24_000)
+	}
+	view := c.View(t.Context(), a.history)
+	if c.sess.lastTruncatedCount == 0 || estimateMessages(view) > 32_000 {
+		t.Fatalf("next turn ignored learned window: truncated=%d tokens=%d",
+			c.sess.lastTruncatedCount, estimateMessages(view))
 	}
 }
 
 // The parser itself, over the phrasings it claims to cover.
 func TestParseOverflowWindowCoversItsPatterns(t *testing.T) {
 	cases := map[string]int{
-		"This model's maximum context length is 200000 tokens": 200000,
-		"context window of 131072 exceeded":                    131072,
-		"max_tokens must be less than 8192":                    8192,
-		"requests are limited to 32000 tokens":                 32000,
-		"rate limit exceeded":                                  0,
-		"maximum context length is zero":                       0,
+		"This model's maximum context length is 200000 tokens":                             200000,
+		"context window of 131072 exceeded":                                                131072,
+		"max_tokens must be less than 8192":                                                0,
+		"requests are limited to 32000 tokens":                                             0,
+		`status 413: {"error":"prompt too long","max_tokens":8192,"context_limit":128000}`: 128000,
+		`status 413: {"error":"prompt too long","max_tokens":8192}`:                        0,
+		`{"max_context_tokens":65536}`:                                                     65536,
+		"prompt is too long: 215000 tokens > 200000 maximum":                               200000,
+		"rate limit exceeded":                                                              0,
+		"maximum context length is zero":                                                   0,
 	}
 	for msg, want := range cases {
 		if got := ParseOverflowWindow(msg); got != want {

@@ -33,8 +33,8 @@ func TestPreToolUsePassthrough(t *testing.T) {
 		}
 	}
 	// audit still records every gated call
-	if len(g.Audit()) == 0 {
-		t.Error("audit should record gated calls")
+	if len(g.Audit()) != 4 {
+		t.Errorf("each completed call should have one audit entry, got %d", len(g.Audit()))
 	}
 }
 

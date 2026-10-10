@@ -66,7 +66,7 @@ func DecideNudge(in DecideNudgeInput) NudgeDecision {
 	}
 
 	adaptive := resolveAdaptiveGrowth(limit, cfg.Nudge)
-	floor := growthFloorOf(adaptive, cfg.Nudge)
+	floor := NudgeGrowthFloor(cfg)
 	minBen := cfg.minPressureBenefit()
 
 	overLimit := usage >= cfg.Nudge.MaxContextLimitPct
@@ -324,5 +324,13 @@ func stampNudge(state *CompressionState, cfg Config, tokenCount int, d NudgeDeci
 // nudge may resume. Reusing the same unit the pacing already speaks in keeps
 // the behaviour predictable and avoids one more knob to tune.
 func NudgeGrowthFloor(cfg Config) int {
-	return growthFloorOf(resolveAdaptiveGrowth(cfg.ModelContextLimit, cfg.Nudge), cfg.Nudge)
+	floor := growthFloorOf(resolveAdaptiveGrowth(cfg.ModelContextLimit, cfg.Nudge), cfg.Nudge)
+	// An absolute floor must not consume all the headroom between pressure and
+	// emergency on a small window, including when the host learned a smaller
+	// provider window after an overflow.
+	band := cfg.Nudge.EmergencyThresholdPct - cfg.Nudge.MaxContextLimitPct
+	if cfg.ModelContextLimit > 0 && band > 0 {
+		floor = min(floor, max(1, int(float64(cfg.ModelContextLimit)*band)))
+	}
+	return floor
 }

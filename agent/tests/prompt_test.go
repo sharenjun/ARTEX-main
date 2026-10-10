@@ -82,3 +82,44 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
 	}
 }
+
+func TestFindingCoverageGuidanceSurvivesSavedPrompts(t *testing.T) {
+	old := PromptOverride
+	t.Cleanup(func() { PromptOverride = old })
+	for _, saved := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default", true: "saved"}[saved], func(t *testing.T) {
+			PromptOverride = nil
+			if saved {
+				// Simulate an existing deployment's editable prompt. It must remain
+				// intact while receiving the new runtime guidance, without a DB reset.
+				PromptOverride = func(role string) (string, bool) {
+					if role == "planner" {
+						return "已保存规划词，目标：{{.Goal}}", true
+					}
+					return "已保存执行词", true
+				}
+			}
+			planner := plannerSystem("只需一个已确认漏洞", "/data", "/data/tasks/6")
+			worker := workerSystem("", "", "/data", "/data/tasks/6/i8")
+			if saved && (!strings.HasPrefix(planner, "已保存规划词，目标：只需一个已确认漏洞") || !strings.HasPrefix(worker, "已保存执行词")) {
+				t.Fatal("runtime guidance replaced the editable body or task goal")
+			}
+			for _, prompt := range []struct {
+				name, text, guidance string
+			}{
+				{"planner", planner, plannerFindingCoverageGuidance},
+				{"worker", worker, workerFindingCoverageGuidance},
+			} {
+				if strings.Count(prompt.text, prompt.guidance) != 1 {
+					t.Fatalf("%s omitted or duplicated runtime finding guidance", prompt.name)
+				}
+				if strings.Index(prompt.text, prompt.guidance) > strings.Index(prompt.text, "**中间产物输出规约**") {
+					t.Fatalf("%s finding guidance lost the system-tail composition", prompt.name)
+				}
+			}
+			if strings.Contains(worker, "traffic_search") {
+				t.Fatal("finding guidance advertised disabled traffic capture")
+			}
+		})
+	}
+}

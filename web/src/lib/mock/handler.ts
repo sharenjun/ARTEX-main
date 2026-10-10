@@ -2270,7 +2270,19 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   }
 
   // ── LLM ──
-  if (path === "/llm/records" && m === "GET") return { records: mockLLMRecords, total: mockLLMRecords.length };
+  if (path === "/llm/records" && m === "GET") {
+    const task = q.get("task");
+    const session = q.get("session");
+    const model = q.get("model");
+    const records = mockLLMRecords.filter((record) =>
+      (!task || record.task_id === task) &&
+      (!session || record.session_id.includes(session)) &&
+      (!model || record.model === model),
+    );
+    const page = Math.max(0, Number(q.get("page")) || 0);
+    const size = Math.max(1, Number(q.get("size")) || 50);
+    return { records: records.slice(page * size, (page + 1) * size), total: records.length };
+  }
   if (path === "/llm/records" && m === "DELETE") return { deleted: 0 };
   if (path === "/llm/records/tasks") {
     const counts = new Map<string, number>();

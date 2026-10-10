@@ -21,13 +21,24 @@ import (
 
 // The end-to-end property: a long cooperative session advances past tier 1.
 func TestLongSessionReachesTierTwo(t *testing.T) {
-	// 128K is the smallest shipped window where this holds; see
-	// TestTierTwoIsUnreachableOnSmallWindows for why 40K does not.
+	// Use outputs large enough to archive individually, so summary accumulation
+	// eventually crosses the adaptive tier-2 threshold even while proactive tier
+	// 1 compression keeps the request well below the pressure band.
 	sess := simSession(t, 128_000)
 	a := newSimAgent(t, sess, 1)
-	for range 182 {
-		a.work(4000)
+	for range 256 {
+		a.work(8000)
 		a.observe()
+		reached := false
+		for _, b := range noa.ActiveBlocks(sess.State()) {
+			if b.Tier == 2 {
+				reached = true
+				break
+			}
+		}
+		if reached {
+			break
+		}
 	}
 
 	byTier := map[noa.Tier]int{}
@@ -54,8 +65,8 @@ func TestTierNudgeNamesItsTargetsInAReadableFormat(t *testing.T) {
 	sess := simSession(t, 128_000)
 	a := newSimAgent(t, sess, 1)
 
-	for range 182 {
-		a.work(4000)
+	for range 256 {
+		a.work(8000)
 		view := sess.View(a.history)
 		nudge := findNudge(view)
 		if nudge == "" {
@@ -84,26 +95,12 @@ func TestTierNudgeNamesItsTargetsInAReadableFormat(t *testing.T) {
 		}
 		return
 	}
-	t.Skip("no tier nudge fired in this run")
+	t.Fatal("no tier nudge fired despite accumulating a summary backlog")
 }
 
-// The gap that remains: on a small window tier 2 never fires, for two reasons
-// that are both absolute constants sized for a 200K window.
-//
-//   - The session lives above MaxContextLimitPct, so decidePressure runs, and it
-//     picks the tier with the most pending tokens. Tier 1 is raw content and
-//     tier 2 is the ~10:1 summary of it, so tier 1 wins every comparison. (The
-//     count-based Tier2Trigger that exists precisely to correct this lives only
-//     in decideGrowth, which pressure skips.)
-//   - When tier 1 IS exhausted, the tier-1 summaries total a few thousand tokens
-//     — a large share of a small window, but under the flat 5000-token
-//     minPressureBenefit, so the nudge is declined as not worth a turn.
-//
-// This test documents the boundary rather than asserting a fix. If a window this
-// small is not a supported configuration, it can be deleted; if it is, the two
-// constants need to scale (see noa.TestSuppressionReleaseFitsInsideTheWindow for
-// the same pattern in the nudge cadence).
-func TestTierTwoIsUnreachableOnSmallWindows(t *testing.T) {
+// Adaptive pacing must give a small-window session enough room to consolidate
+// its summaries, rather than keep it permanently in tier-1 pressure recovery.
+func TestTierTwoWorksOnSmallWindows(t *testing.T) {
 	const window = 40_000
 	sess := simSession(t, window)
 	a := newSimAgent(t, sess, 1)
@@ -120,15 +117,15 @@ func TestTierTwoIsUnreachableOnSmallWindows(t *testing.T) {
 			summaryTokens += noa.DefaultCountTokens(b.Summary)
 		}
 	}
-	minBen := max(5000, window/100)
-	if byTier[2] > 0 {
-		t.Fatalf("tier 2 now fires at a %d window (blocks %v) — the documented limitation is "+
-			"fixed and this test should be replaced by an assertion that it keeps working",
-			window, byTier)
+	if byTier[2] == 0 {
+		t.Fatalf("tier 2 never fired at a %d window (blocks %v)", window, byTier)
 	}
-	t.Logf("window=%d: %d tier-1 blocks holding %d summary tokens (%.0f%% of the window), "+
-		"below the flat minPressureBenefit of %d — tier 2 is declined as not worth a turn",
-		window, byTier[1], summaryTokens, float64(summaryTokens)*100/window, minBen)
+	for _, n := range a.viewTokens {
+		if n > window {
+			t.Fatalf("consolidating a small-window session overflowed: %d > %d", n, window)
+		}
+	}
+	t.Logf("window=%d: active tiers %v, tier-1 summary tokens=%d", window, byTier, summaryTokens)
 }
 
 // Consolidation must actually pay: a tier-2 block has to be smaller than the
