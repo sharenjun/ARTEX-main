@@ -2,9 +2,13 @@
 
 import * as React from "react";
 
+import { useRouter } from "next/navigation";
+
 import { toast } from "sonner";
 
 import { HttpCodeBlock } from "@/components/http-code-block";
+import { headersFromReqHead, requestFromEvidence } from "@/components/repeater/repeater-http";
+import { seedFromEvidence } from "@/components/repeater/repeater-store";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -24,9 +28,11 @@ export function TrafficEvidenceViewer({
   contextTask?: string;
   onClose: () => void;
 }) {
+  const router = useRouter();
   const [detail, setDetail] = React.useState<FindingTrafficDetail | null>(null);
   const [error, setError] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [importing, setImporting] = React.useState(false);
   React.useEffect(() => {
     if (!bindingId) return;
     let active = true;
@@ -62,6 +68,40 @@ export function TrafficEvidenceViewer({
     }
   }
 
+  async function openInRepeater() {
+    if (!detail || importing) return;
+    const captured = detail;
+    const snapshot = captured.binding.snapshot;
+    setImporting(true);
+    try {
+      if (!snapshot.req_head || captured.request.binary) throw new Error("此请求没有可编辑的文本报文");
+      if (captured.request.total > 1024 * 1024) throw new Error("请求正文超过 1 MiB，请下载后精简正文再导入");
+      let page = captured.request;
+      let body = page.content;
+      while (page.truncated) {
+        const next = await api.findingTrafficBody(findingId, captured.binding.id, "request", page.next_offset, contextTask);
+        if (next.binary || next.next_offset <= page.next_offset) throw new Error("无法读取完整请求正文");
+        body += next.content;
+        page = next;
+      }
+      const taskId = contextTask ?? (await api.getFinding(findingId)).task_id;
+      const initial = requestFromEvidence({
+        taskId,
+        method: snapshot.method,
+        url: snapshot.url,
+        headersText: headersFromReqHead(snapshot.req_head),
+        body,
+      }, snapshot.req_head);
+      seedFromEvidence(initial, { findingId, bindingId: captured.binding.id, label: `漏洞 #${findingId} · ${snapshot.method}` });
+      onClose();
+      router.push("/function/repeater");
+    } catch (error) {
+      toast.error((error as Error).message);
+    } finally {
+      setImporting(false);
+    }
+  }
+
   return (
     <Dialog
       open={bindingId !== null}
@@ -76,6 +116,9 @@ export function TrafficEvidenceViewer({
             {detail?.binding.snapshot.url ?? "查看绑定时保存的请求与响应"}
           </DialogDescription>
         </DialogHeader>
+        {detail ? <Button variant="outline" size="sm" disabled={importing} onClick={() => void openInRepeater()}>
+          {importing ? "正在导入完整请求…" : "送入请求重发"}
+        </Button> : null}
         {error ? (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>

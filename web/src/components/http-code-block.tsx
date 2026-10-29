@@ -111,6 +111,49 @@ function HighlightedBody({ body, format }: { body: string; format: BodyFormat })
   return body;
 }
 
+export function HttpPacketSyntax({
+  raw,
+  wrapLines = true,
+  lineNumbers = true,
+  lineClassName,
+}: {
+  raw: string;
+  wrapLines?: boolean;
+  lineNumbers?: boolean;
+  lineClassName?: string;
+}) {
+  const lines = (raw || "").replaceAll("\r\n", "\n").split("\n");
+  const separator = lines.indexOf("");
+  const body = separator >= 0 ? lines.slice(separator + 1).join("\n") : "";
+  const bodyFormat = detectBodyFormat(body);
+  const renderLine = (line: string, index: number) => {
+    if (index === 0) return <StartLine line={line} />;
+    if (separator < 0 || index < separator) return <HeaderLine line={line} />;
+    if (index === separator) return null;
+    return <HighlightedBody body={line} format={bodyFormat} />;
+  };
+  return (
+    <div className="min-w-0 font-mono text-xs">
+      {lines.map((line, index) => (
+        <div
+          key={`${index}-${line}`}
+          className={cn(
+            "grid min-h-5 min-w-0 leading-5",
+            lineNumbers ? "grid-cols-[1.5rem_minmax(0,1fr)]" : "grid-cols-1",
+            wrapLines ? "whitespace-pre-wrap break-words" : "whitespace-pre",
+            lineClassName,
+          )}
+        >
+          {lineNumbers ? <span className="select-none text-right text-muted-foreground/60">{index + 1}</span> : null}
+          <code className="min-w-0 [tab-size:4]">
+            {renderLine(line, index)}
+          </code>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function HttpCodeBlock({ raw }: { raw: string }) {
   const [wrapLines, setWrapLines] = React.useState(true);
   const [copied, setCopied] = React.useState(false);

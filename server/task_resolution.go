@@ -45,6 +45,10 @@ func (s *Server) resolutionFromProfile(p *db.LLMProfile, source string) taskLLMR
 // role Agent binding -> explicit task chain -> active/global environment config.
 // Database failures are returned rather than represented as an unavailable model.
 func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution, error) {
+	return s.resolveTaskSlotLLM(t, agentKey, "work#1")
+}
+
+func (s *Server) resolveTaskSlotLLM(t *Task, agentKey, workerSlot string) (taskLLMResolution, error) {
 	if s == nil || s.m == nil || s.m.pg == nil {
 		return taskLLMResolution{}, fmt.Errorf("database unavailable")
 	}
@@ -74,6 +78,23 @@ func (s *Server) resolveTaskRoleLLM(t *Task, agentKey string) (taskLLMResolution
 			return taskLLMResolution{}, fmt.Errorf("load task LLM profile: %w", err)
 		}
 		return s.resolutionFromProfile(p, "task_chain"), nil
+	}
+	if agentKey == "worker" {
+		ids, err := s.workerPoolProfilesForTask(t)
+		if err != nil {
+			return taskLLMResolution{}, fmt.Errorf("load Worker model pool: %w", err)
+		}
+		if id, selected := workerPoolProfileID(ids, workerSlot); selected {
+			p, err := s.m.pg.ProfileByID(id)
+			if err != nil {
+				return taskLLMResolution{}, fmt.Errorf("load Worker pool profile: %w", err)
+			}
+			resolved := s.resolutionFromProfile(p, "worker_pool")
+			if resolved.ProfileID == nil {
+				resolved.ProfileID = &id
+			}
+			return resolved, nil
+		}
 	}
 	p, err := s.m.pg.ActiveProfile()
 	if err != nil {
@@ -106,7 +127,7 @@ func (s *Server) taskLLMResolutionHandler(w http.ResponseWriter, r *http.Request
 		writeErr(w, 404, "task not found")
 		return
 	}
-	roles := map[string]taskLLMResolution{}
+	roles := map[string]any{}
 	for responseKey, agentKey := range map[string]string{
 		"mainagent": "mainagent",
 		"planner":   "planner",
@@ -119,5 +140,17 @@ func (s *Server) taskLLMResolutionHandler(w http.ResponseWriter, r *http.Request
 		}
 		roles[responseKey] = resolved
 	}
+	workerCount := s.workerSlotsForTask(t)
+	slots := make(map[string]taskLLMResolution, workerCount)
+	for slot := 1; slot <= workerCount; slot++ {
+		name := fmt.Sprintf("work#%d", slot)
+		resolved, err := s.resolveTaskSlotLLM(t, "worker", name)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		slots[name] = resolved
+	}
+	roles["worker_slots"] = slots
 	writeJSON(w, http.StatusOK, roles)
 }

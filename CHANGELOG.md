@@ -4,6 +4,17 @@
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-10-29
+
+### 新增
+
+- 新增请求重发工作区：可从流量证据导入完整请求，在浏览器中保存草稿、分组和响应历史；发送前必须选择授权任务，服务端按任务测试范围及拦截规则校验目标，并固定 DNS 解析地址、限制请求与响应大小和执行时间。
+- 新增可选多模型 Worker 池：按 `work#N` 并发槽位循环固定模型配置，支持在系统设置中排序、预览和清空；显式 Worker 绑定与任务级 LLM 配置链保持更高优先级，空模型池保留原有行为。
+
+### 修复
+
+- 修复 Repeater 对关联资产重复执行允许规则判定，导致精确 URL 允许规则被误拒；并额外阻止 AWS IPv6 元数据地址。
+
 ## [0.4.3] - 2026-10-27
 
 ### 修复
@@ -1045,7 +1056,9 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/Autumn-27/ARTEX/compare/v0.3.10...HEAD
+[Unreleased]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.2...v0.4.3
 [0.3.10]: https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10
 [0.3.9]: https://github.com/Autumn-27/ARTEX/compare/v0.3.8...v0.3.9
 [0.3.8]: https://github.com/Autumn-27/ARTEX/compare/v0.3.7...v0.3.8

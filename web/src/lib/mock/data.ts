@@ -3436,6 +3436,7 @@ export const settings: Settings = {
   global_proxy: "",
   python_interpreter: "/usr/bin/python3",
   workers: 3,
+  worker_pool_profile_ids: [],
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,

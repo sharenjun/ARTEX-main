@@ -81,6 +81,7 @@ function resolutionSource(r: TaskLLMResolution): string {
   switch (r.source) {
     case "agent_binding": return "Agent 角色绑定";
     case "task_chain": return "任务配置链";
+    case "worker_pool": return "Worker 模型池";
     default: return "全局默认";
   }
 }
@@ -1563,6 +1564,16 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     if (!llmResolutions || session.inherited || session.role === "system") return undefined;
     if (session.role === "mainagent") return llmResolutions.mainagent;
     if (session.role === "planner") return llmResolutions.planner;
+    const items = store[keyForSession(session)]?.items ?? [];
+    for (let index = items.length - 1; index >= 0; index--) {
+      const slot = items[index].worker;
+      if (/^work#[1-9]\d*$/.test(slot)) {
+        return llmResolutions.worker_slots?.[slot] ?? llmResolutions.worker;
+      }
+    }
+    if (llmResolutions.worker.source === "worker_pool") {
+      return { ...llmResolutions.worker, name: "Worker 模型池", model: "等待分配工作槽位" };
+    }
     return llmResolutions.worker;
   };
   const activeResolution = resolutionForSession(active);

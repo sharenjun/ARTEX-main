@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { useRouter } from "next/navigation";
 
 import {
   ArrowDownWideNarrowIcon,
@@ -12,6 +13,7 @@ import {
   ListChecksIcon,
   Loader2Icon,
   RadioTowerIcon,
+  Repeat2Icon,
   SearchIcon,
   Trash2Icon,
 } from "lucide-react";
@@ -19,6 +21,8 @@ import { toast } from "sonner";
 
 import { HttpCodeBlock } from "@/components/http-code-block";
 import { LinkTrafficDialog } from "@/components/link-traffic-dialog";
+import { requestFromTraffic } from "@/components/repeater/repeater-http";
+import { seedFromEvidence } from "@/components/repeater/repeater-store";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -112,6 +116,7 @@ const SORT_STORAGE_KEY = "traffic-sort";
 const STATUS_BUCKETS = ["2xx", "3xx", "4xx", "5xx"];
 
 export default function TrafficPage() {
+  const router = useRouter();
   const [selectedFlows, setSelectedFlows] = React.useState<Set<string>>(() => new Set());
   const [linking, setLinking] = React.useState(false);
   const [page, setPage] = React.useState(0);
@@ -330,6 +335,17 @@ export default function TrafficPage() {
         ? { field, direction: prev.direction === "asc" ? "desc" : "asc" }
         : { field, direction: "desc" },
     );
+
+  const openInRepeater = () => {
+    if (!selected || !detail?.req) return;
+    try {
+      const initial = requestFromTraffic(detail.req, selected);
+      seedFromEvidence(initial, { label: `流量 ${selected.id}` });
+      router.push("/function/repeater");
+    } catch (error) {
+      toast.error((error as Error).message);
+    }
+  };
 
   const exchanges = React.useMemo(() => traffic?.exchanges ?? [], [traffic]);
   const total = traffic?.total ?? exchanges.length;
@@ -737,6 +753,15 @@ export default function TrafficPage() {
                     {selected.status}
                   </Badge>
                   <span className="ml-auto text-xs text-muted-foreground tabular-nums">{fmtTime(selected.ts)}</span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={detailLoading || !detail?.req}
+                    onClick={openInRepeater}
+                  >
+                    <Repeat2Icon data-icon="inline-start" />
+                    在请求重发中编辑
+                  </Button>
                 </div>
                 <SheetTitle className="break-all font-mono">{selected.host}</SheetTitle>
                 <SheetDescription className="break-all font-mono">{selected.url}</SheetDescription>

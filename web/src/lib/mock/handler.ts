@@ -53,6 +53,7 @@ const mockTaskCategories = structuredClone(D.taskCategories);
 const mockConversations = structuredClone(D.conversations);
 const mockSyncRuns = structuredClone(D.syncRuns);
 const mockSyncItems = structuredClone(D.syncItems);
+const mockSettings = structuredClone(D.settings);
 const mockRetests: FindingRetest[] = [];
 const mockRetestMessages: Record<number, Activity[]> = {};
 
@@ -821,8 +822,8 @@ function mockProfileResolution(profileID: number | undefined, source: TaskLLMRes
 }
 
 // Mirrors the backend precedence in server/task_resolution.go:
-// Agent 绑定 → 任务 LLM 配置链 → 全局配置 → 环境配置。
-function mockRoleResolution(task: Task, agentKey: "mainagent" | "planner" | "worker"): TaskLLMResolution {
+// Agent 绑定 → 任务 LLM 配置链 → Worker 模型池 → 全局配置 → 环境配置。
+function mockRoleResolution(task: Task, agentKey: "mainagent" | "planner" | "worker", slot = 1): TaskLLMResolution {
   const agent = D.agents.find((item) => item.key === agentKey);
   if (agent?.llm_profile_id) {
     const bound = mockProfileResolution(agent.llm_profile_id, "agent_binding");
@@ -840,6 +841,10 @@ function mockRoleResolution(task: Task, agentKey: "mainagent" | "planner" | "wor
       };
     }
     return mockProfileResolution(task.active_llm_profile_id, "task_chain");
+  }
+  const workerPool = mockSettings.worker_pool_profile_ids ?? [];
+  if (agentKey === "worker" && workerPool.length > 0) {
+    return mockProfileResolution(workerPool[(slot - 1) % workerPool.length], "worker_pool");
   }
   const globalProfile = D.llmProfiles.find((item) => item.is_default);
   if (globalProfile) return mockProfileResolution(Number(globalProfile.id), "global_profile");
@@ -1443,10 +1448,17 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "tasks" && seg[2] === "llm" && seg[3] === "resolution" && m === "GET") {
     const task = mockTasks.find((item) => item.id === seg[1]);
     if (!task) throw new Error("任务不存在");
+    const workerCount = mockSettings.workers ?? 3;
     return {
       mainagent: mockRoleResolution(task, "mainagent"),
       planner: mockRoleResolution(task, "planner"),
       worker: mockRoleResolution(task, "worker"),
+      worker_slots: Object.fromEntries(
+        Array.from({ length: workerCount }, (_, index) => [
+          `work#${index + 1}`,
+          mockRoleResolution(task, "worker", index + 1),
+        ]),
+      ),
     };
   }
   if (path === "/tasks/control/batch" && m === "POST") {
@@ -2247,13 +2259,20 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── traffic / audit / settings ──
   if (path === "/audit") return D.audit;
+  if (path === "/repeater/send" && m === "POST") return {
+    status: 0, status_text: "", proto: "", headers: {}, body: "", body_bytes: 0,
+    body_truncated: false, elapsed_ms: 0, url: String(b.url ?? ""), error: "演示模式不会发送实际请求",
+  };
   if (path === "/traffic" && m === "DELETE") return { deleted: 0 };
   if (path === "/traffic/hosts" && m === "DELETE") return { deleted: (b.hosts as unknown[])?.length ?? 0 };
   if (path === "/traffic/hosts") return { hosts: D.trafficHosts };
   if (path === "/traffic") return D.traffic;
   if (path === "/traffic/exchange") return D.trafficDetail;
-  if (path === "/settings" && m === "GET") return D.settings;
-  if (path === "/settings" && m === "PUT") return { ...D.settings, ...b };
+  if (path === "/settings" && m === "GET") return structuredClone(mockSettings);
+  if (path === "/settings" && m === "PUT") {
+    Object.assign(mockSettings, b);
+    return structuredClone(mockSettings);
+  }
   if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };
   if (path === "/settings/python/detect") return { python_interpreter: "/usr/bin/python3" };
   if (path === "/chat")

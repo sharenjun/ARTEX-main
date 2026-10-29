@@ -721,7 +721,7 @@ export interface TaskLLMResolution {
   name: string;
   format: string;
   model: string;
-  source: "task_chain" | "agent_binding" | "global_profile" | "environment" | "global";
+  source: "task_chain" | "agent_binding" | "worker_pool" | "global_profile" | "environment" | "global";
   available: boolean;
   reason?: string;
 }
@@ -730,6 +730,7 @@ export interface TaskLLMResolutions {
   mainagent: TaskLLMResolution;
   planner: TaskLLMResolution;
   worker: TaskLLMResolution;
+  worker_slots?: Record<string, TaskLLMResolution>; // work#1、work#2 等槽位各自的下一次调用配置
 }
 
 // ---- Agent triggers (P3 调度，仅自定义 agent) ----
@@ -942,6 +943,30 @@ export interface TrafficDetail {
   resp: string;
 }
 
+export interface RepeaterSendRequest {
+  task_id: string;
+  method: string;
+  url: string;
+  http_version?: string;
+  headers: Record<string, string>;
+  body: string;
+  use_recording_proxy: boolean;
+  insecure_skip_verify: boolean;
+}
+
+export interface RepeaterSendResponse {
+  status: number;
+  status_text: string;
+  proto: string;
+  headers: Record<string, string[]>;
+  body: string;
+  body_truncated: boolean;
+  body_bytes: number;
+  elapsed_ms: number;
+  url: string;
+  error?: string;
+}
+
 // One distinct recorded host with its exchange count (target picker).
 export interface TrafficHost {
   host: string;
@@ -971,6 +996,7 @@ export interface Settings {
   global_proxy?: string;
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
+  worker_pool_profile_ids?: number[]; // 有序 Worker 模型池；空=沿用现有模型选择；按工作槽位循环分配
   // 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
   task_concurrency_enabled?: boolean; // 默认 false
   task_concurrency_limit?: number; // 开启后默认 5

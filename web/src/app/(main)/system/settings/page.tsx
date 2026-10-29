@@ -11,9 +11,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { WorkerModelPool } from "@/components/worker-model-pool";
 import { api } from "@/lib/api";
 import { CHAT_SEND_MODE_OPTIONS, type ChatSendMode, setChatSendMode, useChatSendMode } from "@/lib/chat-send-mode";
-import type { Settings } from "@/lib/types";
+import type { LLMProfile, Settings } from "@/lib/types";
 
 import { UpdateCard } from "./_components/update-card";
 
@@ -37,6 +38,9 @@ export default function SystemSettingsPage() {
   const [savingKey, setSavingKey] = React.useState(false);
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
+  const [workerPoolProfileIDs, setWorkerPoolProfileIDs] = React.useState<number[]>([]);
+  const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
+  const [profilesLoading, setProfilesLoading] = React.useState(true);
   const [savingWorkers, setSavingWorkers] = React.useState(false);
   const [reviewSeconds, setReviewSeconds] = React.useState("180");
   const [reviewTurns, setReviewTurns] = React.useState("16");
@@ -60,6 +64,7 @@ export default function SystemSettingsPage() {
     setGlobalProxyInput(s.global_proxy ?? "");
     setPyInterp(s.python_interpreter ?? "");
     setWorkers(String(s.workers ?? 3));
+    setWorkerPoolProfileIDs(s.worker_pool_profile_ids ?? []);
     setReviewSeconds(String(s.completion_review_seconds ?? 180));
     setReviewTurns(String(s.completion_review_turns ?? 16));
     setInjectPlanner(s.constraints_inject_planner !== false);
@@ -75,10 +80,10 @@ export default function SystemSettingsPage() {
     }
     setSavingWorkers(true);
     api
-      .setSettings({ workers: n })
+      .setSettings({ workers: n, worker_pool_profile_ids: workerPoolProfileIDs })
       .then((s) => {
         apply(s);
-        toast.success("已保存并发工作 agent 数（对之后启动的任务生效）");
+        toast.success("已保存工作并发与模型池（对之后启动的任务生效）");
       })
       .catch((e) => toast.error("保存失败：" + (e as Error).message))
       .finally(() => setSavingWorkers(false));
@@ -135,6 +140,11 @@ export default function SystemSettingsPage() {
       .then(apply)
       .catch(() => undefined)
       .finally(() => setLoaded(true));
+    api
+      .llmProfiles()
+      .then(setLLMProfiles)
+      .catch(() => toast.error("加载 LLM 配置失败，请刷新后重试"))
+      .finally(() => setProfilesLoading(false));
   }, [apply]);
 
   const toggleTraffic = (v: boolean) => {
@@ -682,7 +692,7 @@ export default function SystemSettingsPage() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <CpuIcon className="size-4" />
-              工作并发 · Work Agent 数
+              工作并发与 Worker 模型池
             </CardTitle>
             <CardDescription>
               每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后
@@ -690,8 +700,10 @@ export default function SystemSettingsPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
+            <Label htmlFor="worker-count">并发 Work Agent 数</Label>
             <div className="flex items-center gap-2">
               <Input
+                id="worker-count"
                 type="number"
                 min={1}
                 className="w-32 font-mono text-sm"
@@ -700,10 +712,25 @@ export default function SystemSettingsPage() {
                 disabled={!loaded || savingWorkers}
                 onChange={(e) => setWorkers(e.target.value)}
               />
-              <Button onClick={saveWorkers} disabled={!loaded || savingWorkers}>
-                保存
-              </Button>
             </div>
+            <div className="flex flex-col gap-3 border-t pt-4">
+              <Label htmlFor="worker-model-pool">Worker 模型池（可选）</Label>
+              <p className="text-muted-foreground text-xs">
+                按列表顺序为 work#1、work#2 等工作槽位循环分配模型；同一槽位在任务内保持固定。
+                显式绑定的 Worker Agent 模型和任务模型链优先于此模型池。
+              </p>
+              <WorkerModelPool
+                profiles={llmProfiles}
+                value={workerPoolProfileIDs}
+                onValueChange={setWorkerPoolProfileIDs}
+                workers={Number(workers)}
+                disabled={!loaded || savingWorkers}
+                profilesLoading={profilesLoading}
+              />
+            </div>
+            <Button className="self-start" onClick={saveWorkers} disabled={!loaded || savingWorkers}>
+              {savingWorkers ? "正在保存…" : "保存工作配置"}
+            </Button>
           </CardContent>
         </Card>
 

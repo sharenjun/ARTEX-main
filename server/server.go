@@ -145,6 +145,12 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		b := s.agentsForTask(t)
 		return b.pl, b.wk
 	})
+	s.engine.SetWorkerResolver(func(t *Task, name string) *agent.Worker {
+		if !s.taskRuntimeAvailable(t, "worker") {
+			return nil
+		}
+		return s.workerForTask(t, name)
+	})
 	// Global readiness (Ready()/llm_configured): a global active LLM provider is
 	// installed. Task-level runnability is separate (ReadyFor → the resolver above).
 	s.engine.SetReadiness(func() bool {

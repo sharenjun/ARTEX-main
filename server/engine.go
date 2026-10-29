@@ -153,6 +153,7 @@ type Engine struct {
 	// (for example an exhausted failover chain) — there is no global-pair fallback.
 	resolve              func(t *Task) (*agent.Planner, *agent.Worker)
 	resolveAuthoritative bool
+	resolveWorker        func(t *Task, name string) *agent.Worker
 	// readiness reports whether a global LLM provider is configured — the signal behind
 	// Ready()/the llm_configured indicator. Wired once at startup; nil → not ready.
 	readiness func() bool
@@ -749,6 +750,20 @@ func (e *Engine) SetAuthoritativeAgentResolver(fn func(t *Task) (*agent.Planner,
 	e.resolveAuthoritative = true
 }
 
+// SetWorkerResolver selects a dedicated runtime for each stable work#N slot.
+// Called once at startup before task loops start.
+func (e *Engine) SetWorkerResolver(fn func(t *Task, name string) *agent.Worker) {
+	e.resolveWorker = fn
+}
+
+func (e *Engine) workerSnapshotFor(t *Task, name string) *agent.Worker {
+	if e.resolveWorker != nil {
+		return e.resolveWorker(t, name)
+	}
+	_, worker := e.snapshotFor(t)
+	return worker
+}
+
 // snapshotFor returns the planner/worker a task should run on, from the task-router
 // resolver. nil,nil means the task is deliberately unavailable (e.g. an exhausted
 // failover chain); there is no global-pair fallback.
@@ -985,7 +1000,7 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 			return
 		default:
 		}
-		_, worker := e.snapshotFor(t)
+		worker := e.workerSnapshotFor(t, name)
 		if worker == nil {
 			if sleepCtx(ctx, 1500*time.Millisecond) {
 				return
@@ -1255,16 +1270,16 @@ func (e *Engine) runDetachedIntent(ctx context.Context, t *Task, intentID int64,
 			e.decInflight(t.ID)
 		}
 	}()
-	_, worker := e.snapshotFor(t)
-	if worker == nil {
-		return fmt.Errorf("worker 尚未就绪")
-	}
 	node, err := t.Store.GetNode(intentID)
 	if err != nil {
 		return err
 	}
 	if node == nil || node.Kind != db.KindIntent {
 		return fmt.Errorf("intent not found")
+	}
+	worker := e.workerSnapshotFor(t, node.Owner)
+	if worker == nil {
+		return fmt.Errorf("worker 尚未就绪")
 	}
 	e.completionMu.Lock()
 	if e.isCompleting(t.ID) || e.IsPaused(t.ID) || e.isSettling(t.ID) {

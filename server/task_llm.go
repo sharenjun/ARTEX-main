@@ -28,6 +28,10 @@ type taskAgentBundle struct {
 	mainRuntime    *taskLLMRuntime
 	pl             *agent.Planner
 	wk             *agent.Worker
+	workers        map[string]*agent.Worker // protected by Server.taskAgentMu
+	workerPoolIDs  []int64
+	workerPoolErr  error
+	workerSlots    int
 	main           *agent.MainAgent
 }
 
@@ -63,9 +67,13 @@ type llmActivityMetadata struct {
 }
 
 type taskLLMRuntime struct {
-	s        *Server
-	taskID   string
-	agentKey string
+	s                *Server
+	taskID           string
+	agentKey         string
+	workerSlot       string
+	workerPoolIDs    []int64
+	workerPoolErr    error
+	workerPoolPinned bool
 }
 
 type taskLLMError struct {
@@ -153,12 +161,40 @@ func (r *taskLLMRuntime) current() (taskLLMSelection, error) {
 		sel.provider, sel.retry = prov, cfg.Retry
 		return sel, nil
 	}
+	if r.agentKey == "worker" {
+		prov, cfg, selected, err := r.workerPoolProvider()
+		if selected {
+			if err != nil {
+				return sel, err
+			}
+			sel.provider, sel.retry = prov, cfg.Retry
+			return sel, nil
+		}
+	}
 	prov, cfg, ok := r.s.globalProvider()
 	if !ok {
 		return sel, fmt.Errorf("task %s has no available fallback LLM provider", r.taskID)
 	}
 	sel.provider, sel.retry = prov, cfg.Retry
 	return sel, nil
+}
+
+func (r *taskLLMRuntime) workerPoolProvider() (llm.Provider, agent.Config, bool, error) {
+	if !r.workerPoolPinned {
+		return r.s.workerPoolProvider(r.workerSlot)
+	}
+	if r.workerPoolErr != nil {
+		return nil, agent.Config{}, true, r.workerPoolErr
+	}
+	id, selected := workerPoolProfileID(r.workerPoolIDs, r.workerSlot)
+	if !selected {
+		return nil, agent.Config{}, false, nil
+	}
+	prov, cfg, ok := r.s.providerForProfile(id)
+	if !ok {
+		return nil, agent.Config{}, true, fmt.Errorf("Worker slot %s profile #%d is missing or invalid", r.workerSlot, id)
+	}
+	return prov, cfg, true, nil
 }
 
 // activeCfg resolves the task's currently-active LLM config, mirroring current()'s
@@ -178,9 +214,18 @@ func (r *taskLLMRuntime) activeCfg() (agent.Config, bool) {
 	if _, cfg, ok := r.s.agentBindingProvider(r.agentKey); ok {
 		return cfg, true
 	}
-	if len(pt.LLMProfileIDs) > 0 && pt.ActiveLLMProfileID != nil {
-		if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
-			return cfg, true
+	if len(pt.LLMProfileIDs) > 0 {
+		if pt.ActiveLLMProfileID != nil {
+			if _, cfg, ok := r.s.providerForProfile(*pt.ActiveLLMProfileID); ok {
+				return cfg, true
+			}
+		}
+		return agent.Config{}, false
+	}
+	if r.agentKey == "worker" {
+		_, cfg, selected, err := r.workerPoolProvider()
+		if selected {
+			return cfg, err == nil
 		}
 	}
 	if _, cfg, ok := r.s.globalProvider(); ok {
@@ -481,6 +526,15 @@ func (r *taskLLMRuntime) CompactionWindow() int {
 		return (agent.Config{}).CompactionWindow()
 	}
 	if len(chain) == 0 {
+		if r.agentKey == "worker" {
+			_, cfg, selected, err := r.workerPoolProvider()
+			if selected {
+				if err == nil {
+					return cfg.CompactionWindow()
+				}
+				return (agent.Config{}).CompactionWindow()
+			}
+		}
 		if _, cfg, ok := r.s.globalProvider(); ok {
 			return cfg.CompactionWindow()
 		}
@@ -551,6 +605,27 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 		if _, _, ok := s.agentBindingProvider(key); ok {
 			continue
 		}
+		if key == "worker" && len(state.ProfileIDs) == 0 && s.m != nil && s.m.pg != nil {
+			poolReady, selected := true, false
+			ids, err := s.workerPoolProfilesForTask(t)
+			if err != nil {
+				return false
+			}
+			for slot := 1; slot <= s.workerSlotsForTask(t); slot++ {
+				id, present := workerPoolProfileID(ids, fmt.Sprintf("work#%d", slot))
+				selected = selected || present
+				if present {
+					_, _, ok := s.providerForProfile(id)
+					poolReady = poolReady && ok
+				}
+			}
+			if selected {
+				if !poolReady {
+					return false
+				}
+				continue
+			}
+		}
 		if !unboundReady {
 			return false
 		}
@@ -570,22 +645,16 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	if bundle := s.taskAgents[t.ID]; bundle != nil {
 		return bundle
 	}
+	poolIDs, poolErr := s.m.workerPoolProfileIDs()
 	goalRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "goals"}
 	plannerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "planner"}
-	workerRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "worker"}
+	workerRuntime := &taskLLMRuntime{
+		s: s, taskID: t.ID, agentKey: "worker", workerSlot: "work#1",
+		workerPoolIDs: poolIDs, workerPoolErr: poolErr, workerPoolPinned: true,
+	}
 	mainRuntime := &taskLLMRuntime{s: s, taskID: t.ID, agentKey: "mainagent"}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	window := workerRuntime.CompactionWindow()
-	wk := agent.NewWorker(workerRuntime, "task-router", s.m.dir, tx, window, s.agentMaxTurns("worker"))
-	wk.SetFindingRecorder(s.evidenceStore())
-	wk.SetCompactionWindowResolver(workerRuntime.CompactionWindow)
-	wk.SetNonStreaming(workerRuntime.nonStreaming) // 按任务当前激活 profile 的流式开关(每轮读)
-	wk.SetMaxTokens(workerRuntime.maxTokens)       // 同上,输出上限也跟随当前激活 profile
-	wk.SetNoaEnabled(s.m.NoaCompactionEnabled)     // 实验功能:noa 上下文压缩(平台级开关,每 run 读)
-	wk.SetRunTimeout(time.Duration(s.agentRunSeconds("worker")) * time.Second)
-	wk.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
-	wk.SetWebSearch(s.webSearchFor("worker"))
-	wk.SetConstraintInject(s.constraintInjectWorker) // 操作约束注入 worker(可配置,默认开)
+	wk := s.newTaskWorker(workerRuntime, tx)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
 	pl.SetFindingRecorder(s.evidenceStore())
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
@@ -615,6 +684,8 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	bundle := &taskAgentBundle{
 		runtime: goalRuntime, plannerRuntime: plannerRuntime, workerRuntime: workerRuntime,
 		mainRuntime: mainRuntime, pl: pl, wk: wk, main: main,
+		workerPoolIDs: poolIDs, workerPoolErr: poolErr,
+		workerSlots: s.m.Workers(),
 	}
 	s.taskAgents[t.ID] = bundle
 	return bundle
