@@ -42,6 +42,9 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Install frontend test dependencies
+        working-directory: web
+        run: npm ci --no-audit --no-fund
       - name: Frontend unit tests
         working-directory: web
         run: npm test
