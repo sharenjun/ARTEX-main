@@ -1,6 +1,8 @@
 package db
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"time"
 )
@@ -47,39 +49,47 @@ func (s *ExplorationStore) AddConstraint(kind, text, origin string) (int64, erro
 		origin = "system"
 	}
 	var id int64
-	err := s.db.QueryRow(`
-INSERT INTO task_constraints(exploration_id, kind, text, origin)
-VALUES ($1, $2, $3, $4) RETURNING id`, s.expID, kind, text, origin).Scan(&id)
+	err := s.mutatePlannerContract(func(ctx context.Context, tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, `INSERT INTO task_constraints(exploration_id,kind,text,origin) VALUES($1,$2,$3,$4) RETURNING id`, s.expID, kind, text, origin).Scan(&id)
+	})
 	return id, err
 }
 
-// UpdateConstraint rewrites a constraint's kind + text; scoped to this exploration.
-// Returns an error if no such constraint exists.
+// UpdateConstraint replaces a constraint inside the same task-locked transaction
+// that revokes any Planner background built under the previous contract.
 func (s *ExplorationStore) UpdateConstraint(id int64, kind, text string) error {
 	if kind != "allow" && kind != "deny" {
 		return fmt.Errorf("kind 必须是 allow 或 deny")
 	}
-	res, err := s.db.Exec(`
-UPDATE task_constraints SET kind=$1, text=$2, updated_at=now()
-WHERE id=$3 AND exploration_id=$4`, kind, text, id, s.expID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("约束不存在")
-	}
-	return nil
+	return s.mutatePlannerContract(func(ctx context.Context, tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE task_constraints SET kind=$1,text=$2,updated_at=now() WHERE id=$3 AND exploration_id=$4`, kind, text, id, s.expID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("约束不存在")
+		}
+		return nil
+	})
 }
 
-// DeleteConstraint removes a constraint; scoped to this exploration. Returns an
-// error if no such constraint exists.
 func (s *ExplorationStore) DeleteConstraint(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM task_constraints WHERE id=$1 AND exploration_id=$2`, id, s.expID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("约束不存在")
-	}
-	return nil
+	return s.mutatePlannerContract(func(ctx context.Context, tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM task_constraints WHERE id=$1 AND exploration_id=$2`, id, s.expID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return fmt.Errorf("约束不存在")
+		}
+		return nil
+	})
 }

@@ -973,6 +973,58 @@ export interface TrafficHost {
   count: number;
 }
 
+export interface PlannerHandoffReference {
+  kind: "node" | "finding";
+  id: number;
+  version?: number;
+  fingerprint?: string;
+  available: boolean;
+  reason?: string;
+}
+
+export interface PlannerHandoffContent {
+  format_version: number;
+  todos: {
+    id: string;
+    content: string;
+    status: "pending" | "in_progress" | "completed";
+    needs_review?: boolean;
+    references?: PlannerHandoffReference[];
+  }[];
+  decision?: string;
+  deferred_reason?: string;
+  reconsider_when?: string;
+  next_dependencies?: string;
+  background_missing: boolean;
+  background_generated_at?: string;
+  basis: { contract_fingerprint: string; evidence_fingerprint?: string; references?: PlannerHandoffReference[] };
+}
+
+export interface PlannerHandoffSnapshot {
+  version: number;
+  generated_at: string;
+  committed_at: string;
+  checked_at: string;
+  content: PlannerHandoffContent;
+}
+
+export interface PlannerHandoffView {
+  options: { save: boolean; restore: boolean };
+  status: {
+    state: "unsubmitted" | "submitted" | "failed" | "unknown" | "disabled";
+    last_error?: string;
+    version: number;
+    committed_at?: string;
+    recovery_state: "none" | "restored" | "degraded" | "disabled";
+    recovery_reason?: string;
+  };
+  snapshot: PlannerHandoffSnapshot | null;
+  projection: PlannerHandoffContent | null;
+  projection_error?: string;
+  history: PlannerHandoffSnapshot[];
+  limits: { bytes: number; todos: number; references: number; history: number };
+}
+
 // ---- App settings (runtime toggles) ----
 export interface Settings {
   completion_review_seconds?: number;
@@ -1012,6 +1064,8 @@ export interface Settings {
   // worker/主 agent/对话)由 noa 接管上下文压缩,取代内置 compaction;每 run 读一次,对
   // 之后启动的 run 生效。
   noa_compaction?: boolean;
+  planner_handoff_save?: boolean;
+  planner_handoff_restore?: boolean;
   // ---- 漏洞 IM 推送（渠道本身是独立资源，见 /api/notify/*，这里只有三项全局配置）----
   notify_enabled?: boolean; // 推送总开关，默认开；用于维护期一键止血
   notify_public_base_url?: string; // 漏洞详情回链的外部访问地址；空=消息不带回链

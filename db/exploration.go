@@ -2,6 +2,7 @@ package db
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -203,6 +204,17 @@ func (s *ExplorationStore) AddNode(kind string, payload map[string]any, priority
 		return 0, err
 	}
 	defer tx.Rollback()
+	if kind == "goal" {
+		taskID, err := lockPlannerContractOwner(context.Background(), tx, s.expID)
+		if err != nil {
+			return 0, err
+		}
+		if taskID > 0 {
+			if err := bumpPlannerContract(context.Background(), tx, taskID); err != nil {
+				return 0, err
+			}
+		}
+	}
 	var id int64
 	if err := tx.QueryRow(`
 INSERT INTO exploration_nodes(exploration_id, kind, payload, priority, state, origin)
@@ -284,14 +296,34 @@ func (s *ExplorationStore) UpdateGoalPayload(id int64, text, vulnclass string) e
 // CASCADE, so they go with it; activity.node_id is ON DELETE SET NULL. Returns an
 // error if no such goal exists in this exploration.
 func (s *ExplorationStore) DeleteGoal(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal'`, id, s.expID)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
+	defer tx.Rollback()
+	taskID, err := lockPlannerContractOwner(ctx, tx, s.expID)
+	if err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM exploration_nodes WHERE id=$1 AND exploration_id=$2 AND kind='goal'`, id, s.expID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return fmt.Errorf("目标不存在")
 	}
-	return nil
+	if taskID > 0 {
+		if err = bumpPlannerContract(ctx, tx, taskID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // SetIntentState updates an intent node's state.

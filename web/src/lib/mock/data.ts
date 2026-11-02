@@ -3440,6 +3440,8 @@ export const settings: Settings = {
   llm_pool_enabled: true,
   llm_pool_bind_fallback: false,
   noa_compaction: false,
+  planner_handoff_save: false,
+  planner_handoff_restore: false,
 };
 
 // ── LLM 轮询（故障转移）──────────────────────────────────────────────────────

@@ -635,8 +635,22 @@ func (s *Server) taskRuntimeAvailable(t *Task, agentKeys ...string) bool {
 
 func (s *Server) invalidateTaskAgents() {
 	s.taskAgentMu.Lock()
+	defer s.taskAgentMu.Unlock()
+	for _, bundle := range s.taskAgents {
+		if bundle.pl != nil {
+			bundle.pl.RevokeHandoff()
+		}
+	}
+	// Revocation is independent of task/worker evidence settlement. Local
+	// publishers are stopped even when PostgreSQL cannot confirm this fence.
+	if s.m != nil && s.m.pg != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := s.m.pg.InvalidateAllPlannerHandoffInstances(ctx); err != nil {
+			log.Printf("[planner handoff] instance revocation was not confirmed: %v", err)
+		}
+		cancel()
+	}
 	s.taskAgents = map[string]*taskAgentBundle{}
-	s.taskAgentMu.Unlock()
 }
 
 func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
@@ -656,6 +670,18 @@ func (s *Server) agentsForTask(t *Task) *taskAgentBundle {
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
 	wk := s.newTaskWorker(workerRuntime, tx)
 	pl := agent.NewPlanner(plannerRuntime, "task-router", s.m.dir, tx, plannerRuntime.CompactionWindow(), s.agentMaxTurns("planner"))
+	pl.SetHandoffStore(s.m.pg)
+	taskID, taskErr := parseTaskID(t.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	if taskErr == nil {
+		taskErr = s.m.pg.RegisterPlannerHandoffInstance(ctx, taskID, t.Store.ID(), pl.HandoffInstanceID())
+	}
+	cancel()
+	if taskErr != nil {
+		// Planning still follows the existing graph. This instance cannot
+		// publish a handoff without a confirmed host registration.
+		log.Printf("[planner handoff] task %s instance registration failed: %v", t.ID, taskErr)
+	}
 	pl.SetFindingRecorder(s.evidenceStore())
 	pl.SetCompactionWindowResolver(plannerRuntime.CompactionWindow)
 	pl.SetNonStreaming(plannerRuntime.nonStreaming)

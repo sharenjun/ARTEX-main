@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	TaskArchiveFormatVersion       = 3
+	TaskArchiveFormatVersion       = 4
 	TaskArchiveLegacyFormatVersion = 1
 	TaskArchiveLLMRecordsPath      = "database/llm_records.ndjson"
 )
@@ -577,6 +577,8 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 	}{
 		{"tasks", `SELECT * FROM tasks WHERE id=$1`, []any{taskID}},
 		{"task_completions", `SELECT * FROM task_completions WHERE task_id=$1`, []any{taskID}},
+		{"planner_handoffs", `SELECT * FROM planner_handoffs WHERE task_id=$1 AND current_version>0`, []any{taskID}},
+		{"planner_handoff_history", `SELECT * FROM planner_handoff_history WHERE task_id=$1 ORDER BY version`, []any{taskID}},
 		{"explorations", `SELECT * FROM explorations WHERE id=$1`, []any{expID}},
 		{"exploration_nodes", `SELECT * FROM exploration_nodes WHERE exploration_id=$1 ORDER BY id`, []any{expID}},
 		{"exploration_edges", `SELECT * FROM exploration_edges WHERE exploration_id=$1 ORDER BY src_id,dst_id`, []any{expID}},
@@ -650,6 +652,9 @@ func (d *DB) snapshotTaskArchive(taskID int64, llmRecords io.Writer) (*TaskArchi
 		ExplorationID: expID, SourceTaskIDs: sources, Hosts: hosts, ExclusiveHosts: exclusiveHosts,
 		ExclusiveAssetIDs: exclusiveAssetIDs, Tables: tables, StreamedTables: streamedTables,
 		DataCounts: counts, AggregateStats: stats,
+	}
+	if err := ValidateArchivePlannerHandoffs(snapshot); err != nil {
+		return nil, err
 	}
 	return snapshot, tx.Commit()
 }

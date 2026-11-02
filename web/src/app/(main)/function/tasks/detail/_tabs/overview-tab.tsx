@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import { GoalCorrection } from "@/components/goal-correction";
+import { PlannerHandoffCard } from "@/components/planner-handoff-card";
 
 import {
   ActivityIcon,
@@ -462,6 +463,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </div>
         </CardContent>
       </Card>
+      <PlannerHandoffCard taskId={taskId} />
       {/* 目标管理：查看/新增/修改/删除本任务的探索目标。新增与修改会通知规划者并复活任务，
           删除仅通知规划者（不复活）。检查目标保存覆盖条件，成果目标要求取得可核验成果。 */}
       <Card>

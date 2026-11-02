@@ -50,6 +50,9 @@ export default function SystemSettingsPage() {
   const [injectWorker, setInjectWorker] = React.useState(true);
   // 实验功能:noa 上下文压缩(默认关)。
   const [noaCompaction, setNoaCompaction] = React.useState(false);
+  const [handoffSave, setHandoffSave] = React.useState(false);
+  const [handoffRestore, setHandoffRestore] = React.useState(false);
+  const [savingHandoff, setSavingHandoff] = React.useState(false);
   // 纯前端偏好：不走 /api/settings，直接读写 localStorage。
   const sendMode = useChatSendMode();
 
@@ -70,6 +73,8 @@ export default function SystemSettingsPage() {
     setInjectPlanner(s.constraints_inject_planner !== false);
     setInjectWorker(s.constraints_inject_worker !== false);
     setNoaCompaction(!!s.noa_compaction);
+    setHandoffSave(!!s.planner_handoff_save);
+    setHandoffRestore(!!s.planner_handoff_restore);
   }, []);
 
   const saveWorkers = () => {
@@ -201,6 +206,18 @@ export default function SystemSettingsPage() {
         setNoaCompaction(!v); // revert on failure
         toast.error(`保存失败：${(e as Error).message}`);
       });
+  };
+
+  const toggleHandoff = async (key: "planner_handoff_save" | "planner_handoff_restore", value: boolean) => {
+    setSavingHandoff(true);
+    try {
+      apply(await api.setSettings({ [key]: value }));
+      toast.success(value ? "已启用 Planner 交接选项" : "已关闭 Planner 交接选项，已有记录保留");
+    } catch (error) {
+      toast.error(`保存失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setSavingHandoff(false);
+    }
   };
 
   // Persist a web-search patch (enable and/or backend). Optimistic with refetch.
@@ -716,8 +733,8 @@ export default function SystemSettingsPage() {
             <div className="flex flex-col gap-3 border-t pt-4">
               <Label htmlFor="worker-model-pool">Worker 模型池（可选）</Label>
               <p className="text-muted-foreground text-xs">
-                按列表顺序为 work#1、work#2 等工作槽位循环分配模型；同一槽位在任务内保持固定。
-                显式绑定的 Worker Agent 模型和任务模型链优先于此模型池。
+                按列表顺序为 work#1、work#2 等工作槽位循环分配模型；同一槽位在任务内保持固定。 显式绑定的 Worker Agent
+                模型和任务模型链优先于此模型池。
               </p>
               <WorkerModelPool
                 profiles={llmProfiles}
@@ -734,6 +751,38 @@ export default function SystemSettingsPage() {
           </CardContent>
         </Card>
 
+        <Card className="mb-4 break-inside-avoid md:mb-6">
+          <CardHeader>
+            <CardTitle className="text-base">Planner 交接持久化</CardTitle>
+            <CardDescription>
+              保存规划待办与简短决策背景，在重启或重新装配 Planner 后核对并恢复。两项默认关闭；
+              保存失败不撤销已写入的任务图与证据，也不代表整轮已完整保存。
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="planner-handoff-save">保存交接</Label>
+              <Switch
+                id="planner-handoff-save"
+                checked={handoffSave}
+                disabled={!loaded || savingHandoff}
+                onCheckedChange={(value) => toggleHandoff("planner_handoff_save", value)}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <Label htmlFor="planner-handoff-restore">恢复时注入交接</Label>
+              <Switch
+                id="planner-handoff-restore"
+                checked={handoffRestore}
+                disabled={!loaded || savingHandoff}
+                onCheckedChange={(value) => toggleHandoff("planner_handoff_restore", value)}
+              />
+            </div>
+            <p className="text-muted-foreground text-xs">
+              修改后核对当前任务状态与引用。关闭后保留已提交记录，在任务总览可查看版本、保存状态和恢复情况。
+            </p>
+          </CardContent>
+        </Card>
         <Card className="mb-4 break-inside-avoid md:mb-6">
           <CardHeader>
             <CardTitle className="text-base">任务最终复核</CardTitle>

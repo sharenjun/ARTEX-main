@@ -1186,6 +1186,7 @@ func (m *Manager) ApplyTaskAdmission(id, expectedStatus, status string, queued b
 	), admitted AS (
 	UPDATE tasks t
 	SET status=$2,
+	    planner_handoff_epoch=planner_handoff_epoch+1,
 	    completed_at=CASE
 	        WHEN $2 IN ('done','failed','timeout') THEN COALESCE(completed_at, now())
 	        ELSE NULL
@@ -1268,7 +1269,7 @@ func (m *Manager) ApplyTaskPause(id string) error {
 	}
 	var mode string
 	err = m.pg.QueryRow(`UPDATE tasks
-		SET paused=true, queued=false, queued_at=NULL
+		SET paused=true, queued=false, queued_at=NULL, planner_handoff_epoch=planner_handoff_epoch+1
 		WHERE id=$1 AND deleted_at IS NULL AND paused=false
 		  AND status NOT IN ('done','failed','timeout')
 		RETURNING COALESCE(queue_mode,'')`, n).Scan(&mode)
@@ -1306,6 +1307,7 @@ func (m *Manager) EnqueueTask(id, mode string) error {
 	var committedMode string
 	err = m.pg.QueryRow(`UPDATE tasks
 		SET queued=true,
+		    planner_handoff_epoch=planner_handoff_epoch+1,
 		    queued_at=CASE WHEN queued THEN COALESCE(queued_at, now()) ELSE now() END,
 		    queue_mode=CASE
 		        WHEN queue_mode='bootstrap' OR $2='bootstrap' THEN 'bootstrap'

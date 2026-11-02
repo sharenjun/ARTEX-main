@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -158,6 +159,12 @@ func (s *AssetStore) RegisterTaskAssetScopes(taskID int64, inputs []ScopeInput) 
 		return mutation, err
 	}
 	defer tx.Rollback() //nolint:errcheck
+	// Match task deletion/completion: task row precedes asset mutation locks.
+	// Manual scope updates and handoff publication serialize on this owner.
+	var lockedTaskID int64
+	if err := tx.QueryRow(`SELECT id FROM tasks WHERE id=$1 AND deleted_at IS NULL AND archived_at IS NULL FOR UPDATE`, taskID).Scan(&lockedTaskID); err != nil {
+		return mutation, err
+	}
 	if err := lockCompanyScopeMutation(tx); err != nil {
 		return mutation, err
 	}
@@ -242,6 +249,11 @@ func (s *AssetStore) RegisterTaskAssetScopes(taskID int64, inputs []ScopeInput) 
 			mutation.ScopesAdded++
 		} else {
 			mutation.ScopesExisting++
+		}
+	}
+	if mutation.ScopesAdded > 0 {
+		if err := bumpPlannerContract(context.Background(), tx, taskID); err != nil {
+			return mutation, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

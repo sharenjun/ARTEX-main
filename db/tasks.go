@@ -437,7 +437,7 @@ func (d *DB) SetPaused(id int64, paused bool) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err = tx.Exec(`UPDATE tasks SET paused=$1 WHERE id=$2`, paused, id); err != nil {
+	if _, err = tx.Exec(`UPDATE tasks SET paused=$1,planner_handoff_epoch=planner_handoff_epoch+1 WHERE id=$2`, paused, id); err != nil {
 		return err
 	}
 	if !paused {
@@ -493,6 +493,7 @@ func (d *DB) SetStatus(id int64, status string) error {
 	_, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
+       planner_handoff_epoch=planner_handoff_epoch+1,
        completed_at = CASE WHEN $1 IN ('done','failed','timeout') THEN COALESCE(completed_at, now()) ELSE NULL END
  WHERE id = $2`, status, id)
 	return err
@@ -506,6 +507,7 @@ func (d *DB) SetTerminalStatusGuarded(id int64, status string) (won bool, err er
 	res, err := d.Exec(`
 UPDATE tasks
    SET status = $1,
+       planner_handoff_epoch=planner_handoff_epoch+1,
        completed_at = COALESCE(completed_at, now())
  WHERE id = $2 AND status NOT IN ('done','failed','timeout')`, status, id)
 	if err != nil {

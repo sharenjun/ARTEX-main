@@ -280,6 +280,9 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 	if snapshot.TaskID != job.TaskID || !pgdb.IsTaskArchiveFormatSupported(snapshot.FormatVersion) {
 		return pgdb.ErrTaskArchiveFormatMismatch
 	}
+	if err := pgdb.ValidateArchivePlannerHandoffs(&snapshot); err != nil {
+		return err
+	}
 	evidenceSnapshots, err := pgdb.ArchiveEvidenceSnapshots(&snapshot)
 	if err != nil {
 		return err
@@ -290,6 +293,9 @@ func (s *Server) restoreTaskArchive(job *pgdb.TaskArchive) (runErr error) {
 }
 
 func (s *Server) restoreTaskArchivePayload(job *pgdb.TaskArchive, snapshot *pgdb.TaskArchiveSnapshot, extracted string) (runErr error) {
+	if err := pgdb.ValidateArchivePlannerHandoffs(snapshot); err != nil {
+		return err
+	}
 	var err error
 	var llmRecordsFile *os.File
 	relative, hasStreamedLLMRecords := snapshot.StreamedTables["llm_records"]

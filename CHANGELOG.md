@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-11-02
+
+### 新增
+
+- 新增可选 Planner 交接持久化：保存稳定身份的待办和显式简短决策背景，分别控制保存与恢复注入（默认关闭）；开启后在正常规划中自动保存，重启或 Agent 重新装配后自动核对并恢复已提交内容，无需逐轮人工交接。提交校验任务契约、实例和规划轮资格，任务总览显示提交状态、最近成功版本及恢复降级原因。交接失败不回滚业务图或重放动作。
+- 任务归档升级为 v4，纳入交接当前快照及受控历史，兼容读取无交接的 v1–v3 包；恢复重新核对引用并撤销旧发布资格。旧程序不支持 v4 包及新增交接数据的完整归档管理。
+
+### 修复
+
+- Worker 会话恢复区分首次无历史、损坏或缺失历史以及工具结果未知；无法确认续接时保留原会话和业务记录并请求核对，避免静默按“未执行”继续。交接不提供外部副作用恰好一次保证。
+
+### 验证与升级
+
+- 隔离 PostgreSQL 下的交接提交、跨进程恢复、Agent 重新装配、迟到写拒绝、开关在途停用、失败与未知提交、归档往返及旧包兼容专项通过；相关任务、证据和收官路径完成定向回归。
+- 前端单元测试、类型检查和静态构建通过；Linux 竞态回归已纳入发布门禁。真实模型是否减少重复理解、耗时或 Token，仍需多次对照验证。
+- 升级沿用 PostgreSQL 附加表列的幂等迁移。可在「系统设置 → Planner 交接持久化」独立启用保存与恢复，关闭后保留已提交数据；程序回滚前应备份，并避免用旧程序归档含新交接数据的任务。经验库、来源经验检索和自动提醒不属于本版范围。
+
 ## [0.4.4] - 2026-10-29
 
 ### 新增
@@ -1056,7 +1073,8 @@
 - [@Autumn-27](https://github.com/Autumn-27)
 - [@neouks](https://github.com/neouks)
 
-[Unreleased]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.4...HEAD
+[Unreleased]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.5...HEAD
+[0.4.5]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/sharenjun/ARTEX-main/compare/v0.4.2...v0.4.3
 [0.3.10]: https://github.com/Autumn-27/ARTEX/compare/v0.3.9...v0.3.10

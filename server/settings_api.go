@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -54,7 +55,9 @@ func (s *Server) settingsPayload() map[string]any {
 		"constraints_inject_worker":  s.constraintInjectWorker(),
 		// 实验功能:noa 模型驱动上下文压缩(默认关)。开启后平台接入的四类 agent 由 noa
 		// 接管上下文压缩,取代内置 compaction;每 run 读一次,对之后启动的 run 生效。
-		"noa_compaction": s.m.NoaCompactionEnabled(),
+		"noa_compaction":          s.m.NoaCompactionEnabled(),
+		"planner_handoff_save":    s.m.pg.GetBool(db.PlannerHandoffSaveSetting, false),
+		"planner_handoff_restore": s.m.pg.GetBool(db.PlannerHandoffRestoreSetting, false),
 		// 漏洞 IM 推送的全局项。渠道本身是独立资源，走 /api/notify/* 管理；
 		// 这里只放「作用于全部渠道」的三项。
 		"notify_enabled":             s.m.pg.GetBool(settingNotifyEnabled, true),
@@ -129,7 +132,9 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		ConstraintsInjectPlanner *bool `json:"constraints_inject_planner"`
 		ConstraintsInjectWorker  *bool `json:"constraints_inject_worker"`
 		// 实验功能:noa 上下文压缩开关(默认关);每 run 读,对之后启动的 run 生效,无需重建 agent。
-		NoaCompaction *bool `json:"noa_compaction"`
+		NoaCompaction         *bool `json:"noa_compaction"`
+		PlannerHandoffSave    *bool `json:"planner_handoff_save"`
+		PlannerHandoffRestore *bool `json:"planner_handoff_restore"`
 		// 漏洞 IM 推送的全局项。三者都由投递引擎每轮读一次，改完即时生效，
 		// 不需要重建 agent 或重启。
 		NotifyEnabled    *bool   `json:"notify_enabled"`
@@ -181,6 +186,19 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	if req.ConstraintsInjectWorker != nil {
 		if err := s.m.pg.SetBool(settingConstraintsInjectWorker, *req.ConstraintsInjectWorker); err != nil {
 			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.PlannerHandoffSave != nil || req.PlannerHandoffRestore != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		err := s.m.pg.SetPlannerHandoffSettings(ctx, req.PlannerHandoffSave, req.PlannerHandoffRestore)
+		cancel()
+		if errors.Is(err, db.ErrPlannerHandoffBusy) {
+			writeErr(w, http.StatusConflict, "任务正在提交状态，交接设置未修改，请稍后重试")
+			return
+		}
+		if err != nil {
+			writeErr(w, http.StatusServiceUnavailable, "Planner 交接设置未确认保存，请刷新核对后重试")
 			return
 		}
 	}

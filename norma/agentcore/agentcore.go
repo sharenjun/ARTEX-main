@@ -342,6 +342,15 @@ func (s *Session) Close() error {
 	return nil
 }
 
+// TranscriptError reports a failed append without changing execution results.
+// Hosts can display recovery degradation while preserving saved tool effects.
+func (s *Session) TranscriptError() error {
+	if s.writer == nil {
+		return nil
+	}
+	return s.writer.Err()
+}
+
 // Messages returns the conversation history.
 func (s *Session) Messages() []llm.Message { return s.messages }
 

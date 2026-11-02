@@ -1,11 +1,13 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // TaskScope is one row of a task's test scope — the coverage denominator and the
@@ -214,21 +216,65 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 	default:
 		return ts, fmt.Errorf("不支持的 kind: %s（company/root_domain/subdomain/ip/cidr/icp/keyword）", kind)
 	}
-	if err := s.upsertTaskScope(ts); err != nil {
+	if s.tx != nil {
+		if err := s.upsertTaskScope(ts); err != nil {
+			return ts, err
+		}
+		return ts, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
 		return ts, err
 	}
-	return ts, nil
+	defer tx.Rollback()
+	var lockedID int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id=$1 AND deleted_at IS NULL AND archived_at IS NULL FOR UPDATE`, taskID).Scan(&lockedID); err != nil {
+		return ts, err
+	}
+	copy := *s
+	copy.tx = tx
+	changed, err := copy.upsertTaskScopeResult(ts)
+	if err != nil {
+		return ts, err
+	}
+	if changed {
+		if err = bumpPlannerContract(ctx, tx, taskID); err != nil {
+			return ts, err
+		}
+	}
+	return ts, tx.Commit()
 }
 
 // DeleteTaskScope removes a single scope row by id, scoped to the given task.
 // Returns whether a row was actually deleted.
 func (s *AssetStore) DeleteTaskScope(taskID, scopeID int64) (bool, error) {
-	res, err := s.db.Exec(`DELETE FROM task_scope WHERE id=$1 AND task_id=$2`, scopeID, taskID)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, err
 	}
-	n, _ := res.RowsAffected()
-	return n > 0, nil
+	defer tx.Rollback()
+	var lockedID int64
+	if err = tx.QueryRowContext(ctx, `SELECT id FROM tasks WHERE id=$1 AND deleted_at IS NULL AND archived_at IS NULL FOR UPDATE`, taskID).Scan(&lockedID); err != nil {
+		return false, err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM task_scope WHERE id=$1 AND task_id=$2`, scopeID, taskID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		if err = bumpPlannerContract(ctx, tx, taskID); err != nil {
+			return false, err
+		}
+	}
+	return n > 0, tx.Commit()
 }
 
 // ListTaskScope returns all scope rows for a task.

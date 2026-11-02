@@ -2257,12 +2257,37 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/tokens/daily") return D.dailyTokens;
   if (path === "/tokens/conversations") return D.convTokens;
 
+  if (seg[0] === "tasks" && seg[2] === "planner-handoff" && m === "GET") {
+    if (!mockTasks.some((task) => task.id === seg[1])) throw new Error("task not found");
+    return {
+      options: { save: !!mockSettings.planner_handoff_save, restore: !!mockSettings.planner_handoff_restore },
+      status: {
+        state: mockSettings.planner_handoff_save ? "unsubmitted" : "disabled",
+        version: 0,
+        recovery_state: mockSettings.planner_handoff_restore ? "none" : "disabled",
+      },
+      snapshot: null,
+      projection: null,
+      history: [],
+      limits: { bytes: 65536, todos: 64, references: 256, history: 20 },
+    };
+  }
+
   // ── traffic / audit / settings ──
   if (path === "/audit") return D.audit;
-  if (path === "/repeater/send" && m === "POST") return {
-    status: 0, status_text: "", proto: "", headers: {}, body: "", body_bytes: 0,
-    body_truncated: false, elapsed_ms: 0, url: String(b.url ?? ""), error: "演示模式不会发送实际请求",
-  };
+  if (path === "/repeater/send" && m === "POST")
+    return {
+      status: 0,
+      status_text: "",
+      proto: "",
+      headers: {},
+      body: "",
+      body_bytes: 0,
+      body_truncated: false,
+      elapsed_ms: 0,
+      url: String(b.url ?? ""),
+      error: "演示模式不会发送实际请求",
+    };
   if (path === "/traffic" && m === "DELETE") return { deleted: 0 };
   if (path === "/traffic/hosts" && m === "DELETE") return { deleted: (b.hosts as unknown[])?.length ?? 0 };
   if (path === "/traffic/hosts") return { hosts: D.trafficHosts };

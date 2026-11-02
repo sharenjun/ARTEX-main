@@ -366,7 +366,16 @@ func (s *ExplorationStore) editGoalPayload(id int64, text, vulnclass string) err
 		if _, err = tx.ExecContext(ctx, `DELETE FROM exploration_edges WHERE exploration_id=$1 AND dst_id=$2 AND rel='proves'`, s.expID, id); err != nil {
 			return err
 		}
-		_, err = tx.ExecContext(ctx, `UPDATE exploration_nodes SET payload=$1,state='open',content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, string(raw), id, s.expID)
-		return err
+		if _, err = tx.ExecContext(ctx, `UPDATE exploration_nodes SET payload=$1,state='open',content_version=content_version+1 WHERE id=$2 AND exploration_id=$3`, string(raw), id, s.expID); err != nil {
+			return err
+		}
+		taskID, err := lockPlannerContractOwner(ctx, tx, s.expID)
+		if err != nil {
+			return err
+		}
+		if taskID > 0 {
+			return bumpPlannerContract(ctx, tx, taskID)
+		}
+		return nil
 	})
 }

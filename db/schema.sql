@@ -1583,3 +1583,40 @@ ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_digest TEXT NOT NU
 ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS failure_profile TEXT NOT NULL DEFAULT '';
 ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
 ALTER TABLE task_completions ADD COLUMN IF NOT EXISTS recovery_action TEXT NOT NULL DEFAULT '';
+
+-- Optional Planner background projection. Publication eligibility belongs to the
+-- live task, never to a restored snapshot or its historical instance identity.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_handoff_epoch BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_contract_generation BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS planner_handoff_instance_id TEXT NOT NULL DEFAULT '';
+CREATE TABLE IF NOT EXISTS planner_handoffs (
+ task_id BIGINT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+ exploration_id BIGINT NOT NULL REFERENCES explorations(id) ON DELETE CASCADE,
+ current_version BIGINT NOT NULL CHECK(current_version>0),
+ last_request_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL,
+ run_id TEXT NOT NULL,
+ epoch BIGINT NOT NULL,
+ contract_generation BIGINT NOT NULL,
+ content JSONB NOT NULL CHECK(octet_length(content::text)<=131072),
+ content_hash TEXT NOT NULL,
+ generated_at TIMESTAMPTZ NOT NULL,
+ committed_at TIMESTAMPTZ NOT NULL,
+ checked_at TIMESTAMPTZ NOT NULL
+);
+CREATE TABLE IF NOT EXISTS planner_handoff_history (
+ task_id BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+ version BIGINT NOT NULL CHECK(version>0),
+ request_id TEXT NOT NULL,
+ instance_id TEXT NOT NULL,
+ run_id TEXT NOT NULL,
+ epoch BIGINT NOT NULL,
+ contract_generation BIGINT NOT NULL,
+ content JSONB NOT NULL CHECK(octet_length(content::text)<=131072),
+ content_hash TEXT NOT NULL,
+ generated_at TIMESTAMPTZ NOT NULL,
+ committed_at TIMESTAMPTZ NOT NULL,
+ checked_at TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(task_id,version),
+ UNIQUE(task_id,request_id)
+);

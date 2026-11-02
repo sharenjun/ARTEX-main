@@ -122,11 +122,16 @@ jobs:
           go run ./tests/run.go -race -shuffle=on -p 1 -count=1 -timeout=4m
           ./agent ./db ./server
           -run 'TestReviewCompletion|TestBuildReviewInput|TestCompletion|TestTaskCompletion|TestRemainingWork|TestSync|TestSS|TestGoalProof|TestGoalReview|TestGoalCorrection'
+      - name: Planner handoff persistence and recovery race regression
+        run: >-
+          go run ./tests/run.go -race -shuffle=on -p 1 -count=1 -timeout=4m
+          ./agent ./db ./server
+          -run 'TestPlannerHandoff|TestPlannerTodo|TestValidateArchivePlannerHandoffs|TestWorkerResume|TestWorkerRecovery|TestWorkerTranscript|TestWorkerFreshHuman'
       - name: Worker settlement and execution guard race regression
         run: >-
           go run ./tests/run.go --module norma -race -shuffle=on -p 1 -count=1 -timeout=4m
           ./agentcore ./harness ./subagent ./tool
-          -run 'Test.*Settlement|TestExecuteExtraToolCannotBypassInheritedExecutionGuard|TestInvokeRejectsCanceledExecutionBeforeHostCallback'
+          -run 'Test.*Settlement|TestExecuteExtraToolCannotBypassInheritedExecutionGuard|TestInvokeRejectsCanceledExecutionBeforeHostCallback|TestTodo'
       - name: P0 and P1 task quality race regression
         run: >-
           go run ./tests/run.go -race -shuffle=on -p 1 -count=1 -timeout=4m

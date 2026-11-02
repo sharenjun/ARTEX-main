@@ -24,6 +24,9 @@ func (d *DB) CompleteTaskArchive(
 	if snapshot == nil || snapshot.FormatVersion != TaskArchiveFormatVersion {
 		return ErrTaskArchiveFormatMismatch
 	}
+	if err := ValidateArchivePlannerHandoffs(snapshot); err != nil {
+		return err
+	}
 	countsRaw, err := json.Marshal(snapshot.DataCounts)
 	if err != nil {
 		return err
@@ -78,6 +81,12 @@ WHERE relation.source_task_id=$1 LIMIT 1`, taskID).Scan(&dependent)
 			return err
 		}
 	}
+	if _, err := tx.Exec(`DELETE FROM planner_handoff_history WHERE task_id=$1`, taskID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM planner_handoffs WHERE task_id=$1`, taskID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(`DELETE FROM side_question_sessions WHERE task_id=$1`, taskID); err != nil {
 		return err
 	}
@@ -123,7 +132,9 @@ AND NOT EXISTS (
  name='',category_id=NULL,description='',goal='',paused=true,queued=false,queued_at=NULL,queue_mode='',
  llm_profile_id=NULL,active_llm_profile_id=NULL,llm_chain_revision=llm_chain_revision+1,
  company_id=NULL,parent_ref=NULL,timeout_seconds=0,coverage_enabled=true,pinned_at=NULL,
- first_run_at=NULL,deadline_at=NULL,archived_at=now(),deleted_at=now()
+ first_run_at=NULL,deadline_at=NULL,archived_at=now(),deleted_at=now(),
+ planner_handoff_epoch=planner_handoff_epoch+1,planner_contract_generation=planner_contract_generation+1,
+ planner_handoff_instance_id=''
 WHERE id=$1`, taskID); err != nil {
 		return err
 	}
@@ -167,6 +178,9 @@ func (d *DB) restoreTaskArchive(
 ) ([]string, error) {
 	if snapshot == nil || !IsTaskArchiveFormatSupported(snapshot.FormatVersion) {
 		return nil, ErrTaskArchiveFormatMismatch
+	}
+	if err := ValidateArchivePlannerHandoffs(snapshot); err != nil {
+		return nil, err
 	}
 	streamedLLMRecords := snapshot.StreamedTables["llm_records"]
 	if (len(snapshot.StreamedTables) > 0 && snapshot.FormatVersion < 2) ||
@@ -298,6 +312,9 @@ WHERE archive.id=$1 FOR UPDATE OF archive,task`, archiveID).Scan(&taskID, &expID
 	if err := restoreTaskCompletion(tx, taskID, remappedTables["task_completions"]); err != nil {
 		return nil, err
 	}
+	if err := restorePlannerHandoffsTx(tx, snapshot); err != nil {
+		return nil, fmt.Errorf("restore planner handoff: %w", err)
+	}
 	warningsRaw, _ := json.Marshal(warnings)
 	if _, err := tx.Exec(`UPDATE task_archives SET warnings=$2,phase='database_restored',progress=85,error='' WHERE id=$1`, archiveID, string(warningsRaw)); err != nil {
 		return nil, err
@@ -329,6 +346,8 @@ func restoreTaskStub(tx *sql.Tx, row map[string]any, taskID, remaining int64) er
  deadline_at=CASE WHEN archived.paused AND $3>0 THEN now()+make_interval(secs=>$3::double precision)
                   ELSE archived.deadline_at END,
  deleted_at=NULL,archived_at=NULL,completed_at=archived.completed_at,
+ planner_handoff_epoch=current.planner_handoff_epoch+1,
+ planner_contract_generation=current.planner_contract_generation+1,planner_handoff_instance_id='',
  created_at=archived.created_at,updated_at=archived.updated_at
 FROM json_populate_record(NULL::tasks,$2::json) archived
 WHERE current.id=$1 AND archived.id=$1`, taskID, string(raw), remaining)
@@ -402,6 +421,7 @@ func insertArchiveRows(tx *sql.Tx, table string, raw json.RawMessage) error {
 		"task_constraints": true, "activity": true, "task_asset_links": true, "findings": true,
 		"llm_records": true, "llm_usage": true, "skill_usage": true, "tool_usage": true,
 		"side_question_sessions": true, "side_question_requests": true,
+		"planner_handoffs": true, "planner_handoff_history": true,
 	}
 	if !allowed[table] {
 		return fmt.Errorf("archive restore table %q is not allowed", table)

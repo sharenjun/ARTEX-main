@@ -73,6 +73,7 @@ import type {
   NotificationDelivery,
   NotificationFilter,
   NotificationMeta,
+  PlannerHandoffView,
   PromptVar,
   PromptVersion,
   RepeaterSendRequest,
@@ -257,6 +258,8 @@ export const api = {
   tasks: () =>
     get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
   task: (id: string) => get<Task>(`/tasks/${encodeURIComponent(id)}`),
+  plannerHandoff: (id: string, history = false) =>
+    get<PlannerHandoffView>(`/tasks/${encodeURIComponent(id)}/planner-handoff${history ? "?history=1" : ""}`),
   updateTaskEngagement: (
     id: string,
     change: {

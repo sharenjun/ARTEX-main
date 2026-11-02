@@ -1,6 +1,11 @@
 package db
 
-import "database/sql"
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"time"
+)
 
 // Settings is a tiny key-value store for global app config the UI toggles at
 // runtime (e.g. traffic_capture). Missing keys fall back to caller defaults.
@@ -19,6 +24,18 @@ func (d *DB) GetSetting(key string) (value string, ok bool, err error) {
 
 // SetSetting upserts a setting value.
 func (d *DB) SetSetting(key, value string) error {
+	if key == PlannerHandoffSaveSetting || key == PlannerHandoffRestoreSetting {
+		if value != "true" && value != "false" && value != "1" && value != "0" {
+			return fmt.Errorf("invalid planner handoff setting")
+		}
+		enabled := value == "true" || value == "1"
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if key == PlannerHandoffSaveSetting {
+			return d.SetPlannerHandoffSettings(ctx, &enabled, nil)
+		}
+		return d.SetPlannerHandoffSettings(ctx, nil, &enabled)
+	}
 	_, err := d.Exec(`
 INSERT INTO settings(key, value) VALUES ($1, $2)
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, key, value)

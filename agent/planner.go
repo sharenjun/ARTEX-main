@@ -14,6 +14,7 @@ import (
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
+	"github.com/google/uuid"
 )
 
 // Planner is the event-driven LLM planner (docs §4.3): each time the asset or
@@ -48,10 +49,19 @@ type Planner struct {
 	// dispatch it step-by-step over rounds instead of front-loading it in parallel.
 	todoMu sync.Mutex
 	todos  map[int64]*actool.TodoStore
+
+	handoffStore     plannerHandoffStore
+	handoffInstance  string
+	handoffMu        sync.Mutex
+	handoffPublishMu sync.Mutex
+	handoffRevoked   bool
+	handoffStatuses  map[int64]PlannerHandoffStatus
+	handoffRestored  map[int64]bool
+	handoffLocals    map[int64]plannerHandoffLocal
 }
 
 func NewPlanner(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *Planner {
-	return &Planner{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, todos: map[int64]*actool.TodoStore{}}
+	return &Planner{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns, todos: map[int64]*actool.TodoStore{}, handoffInstance: uuid.NewString(), handoffStatuses: map[int64]PlannerHandoffStatus{}, handoffRestored: map[int64]bool{}}
 }
 
 func (p *Planner) SetCompactionWindowResolver(fn func() int) { p.windowFn = fn }
@@ -139,7 +149,15 @@ func renderPlannerTodos(items []actool.Todo) string {
 		if mark == "" {
 			mark = "☐"
 		}
-		b.WriteString(fmt.Sprintf("  %s %s\n", mark, it.Content))
+		if it.ID != "" {
+			b.WriteString(fmt.Sprintf("  %s id=%s %s", mark, it.ID, it.Content))
+			if it.NeedsReview {
+				b.WriteString("（待核对：" + it.ReviewReason + "）")
+			}
+			b.WriteByte('\n')
+		} else {
+			b.WriteString(fmt.Sprintf("  %s %s\n", mark, it.Content))
+		}
 	}
 	b.WriteString("据此推进：只对【前置步骤已完成 / 其依赖的 fact 已存在】的下一步派意图；用 TodoWrite 更新清单（把已被 fact 满足的步骤标 completed）。不要重复派已在清单里 pending/in_progress 的步骤。")
 	return b.String()
@@ -367,6 +385,8 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
 func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
+	todoStore := p.todoFor(ts.ID())
+	handoff := p.beginHandoffRound(ctx, taskID, ts.ID(), todoStore, emit)
 	// cold-digest §2.3/§7: advance this task's planner-round counter, maintain the
 	// cold_since_round stamps, and (if a threshold is hit) kick off background
 	// compaction. Synchronous part is cheap (a few queries); the LLM compaction
@@ -389,9 +409,19 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	// 资产覆盖度功能关闭时剔除 add_task_scope/list_untested_assets（不入 prompt）。
 	base := append(tsx.DropCoverageTools(tsx.PlannerTools()), actool.DefaultTools()...)
+	if handoff != nil && handoff.canSave() {
+		base = append(base, handoff.contextTool())
+	}
 	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "planner", base)
 	defer cleanup()
+	if handoff != nil {
+		for _, tool := range tools {
+			if tool.Name() == plannerHandoffContextTool {
+				handoff.contextAllowed = true
+			}
+		}
+	}
 	// 关键态势（刚完成的意图 + 预取的完整图）改放【本轮 user 输入】(见下方 input)，system
 	// 只留静态规划正文。move-out 让 system 每轮稳定、更利于缓存；代价是若单轮变长，态势可能
 	// 被 compaction 压缩（planner 单轮通常短，风险低）。situational 会拼进下方 input。
@@ -447,7 +477,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		MaxDuration:           maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
 		Compaction:            compactionConfig(p.compactionWindow()),
 		// 跨唤醒共享的规划待办：让串行链在多轮之间保留（session 是新的，store 不是）。
-		Todos: p.todoFor(ts.ID()),
+		Todos: todoStore,
 		// 命中【本轮】步数预算→ SDK 跑收尾:把本轮已想清楚的结论落地(该派的 add_intent、
 		// 能证的 prove_goal、串行链记 TodoWrite),而非停止规划——planner 之后仍会被反复唤醒。
 		// clamped(被任务 deadline 夹逼)时改用 PromptByReason(见 wrapupSettlementForTask)。
@@ -475,17 +505,25 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 			lead = "本轮是**定时巡检（心跳到点）**的唤醒,且当前**已没有任何 open 或 running 的意图**——没有 worker 在跑、也没有排队中的方向,探索已停摆。你**必须**在本轮产出一个或多个向目标推进、且与图中既有意图**互不重复**的新意图(不得产出 0 意图);先据下面的态势判定目标是否已达成,未达成则立即补方向："
 		}
 	}
+	handoffPrompt := handoff.prompt(ctx)
 	input := lead + situational + "\n\n据上面的态势，判定目标。目标已【真正达成】（已拿到目标成果/已确认目标漏洞）时用 prove_goal 逐个标记。**硬底线：只要目标尚未达成、且当前没有任何 open 或 running 意图（frontier_open=0 且 running_intents 为空），本轮就必须产出至少一个向目标推进的意图——此时没有在跑的 work 可等、也没有在排队的方向，产出 0 意图=任务停摆。仅当已有 open/running 意图在推进、或目标已达成时，本轮才可以不产出新意图。**" +
-		renderPlannerTodos(opts.Todos.List())
+		renderPlannerTodos(opts.Todos.List()) + handoffPrompt
 	// MaxDuration 现在会在墙钟到点打断在跑工具并就地进收尾(在活 ctx 上),单轮卡死不再
 	// 绕过收尾,无需外部硬 ctx 兜底。ctx 只承载 pause / kill / shutdown。
 	_, _, err = captureRun(ctx, opts, input,
 		func(r db.Activity) {
+			if handoff != nil && r.Kind == "tool_result" && !r.IsError && (r.Tool == "TodoWrite" || r.Tool == plannerHandoffContextTool) {
+				handoff.save(ctx)
+			}
 			if emit != nil {
 				r.Worker = "planner" // planner activity has no intent_id (it generates them)
 				emit(r)
 			}
 		})
+	if handoff != nil && err == nil {
+		handoff.finalizing = true
+		handoff.save(ctx)
+	}
 	tsx.completionResultMu.Lock()
 	defer tsx.completionResultMu.Unlock()
 	return tsx.GoalMet, tsx.Reason, err

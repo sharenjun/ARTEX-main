@@ -85,7 +85,7 @@ func (d *DB) UpdateEngagement(ctx context.Context, taskID int64, change Engageme
 		if _, err = tx.ExecContext(ctx, `INSERT INTO task_engagement_audits(task_id,reason,previous,current) VALUES($1,$2,$3,$4)`, taskID, change.Reason, string(prior), string(raw)); err != nil {
 			return err
 		}
-		if _, err = tx.ExecContext(ctx, `UPDATE tasks SET goal=$2,description=$3 WHERE id=$1;`, taskID, change.Goal, change.Description); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE tasks SET goal=$2,description=$3,planner_contract_generation=planner_contract_generation+1,planner_handoff_epoch=planner_handoff_epoch+1 WHERE id=$1;`, taskID, change.Goal, change.Description); err != nil {
 			return err
 		}
 		if _, err = tx.ExecContext(ctx, `UPDATE explorations SET goal=$2,description=$3 WHERE id=$1`, expID, change.Goal, change.Description); err != nil {
@@ -208,6 +208,9 @@ func (s *AssetStore) EditManualTaskScope(ctx context.Context, taskID, deleteID i
 			if err != nil {
 				return err
 			}
+		}
+		if err := bumpPlannerContract(ctx, tx, taskID); err != nil {
+			return err
 		}
 		// Target references also live in free-text intent payloads. Conservatively
 		// retire unfinished work and replan, rather than let a resumed old intent
